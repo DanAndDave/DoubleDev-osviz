@@ -34,7 +34,9 @@ test("Task progress equals `openspec list --json` for every change", async () =>
 
   const snapshot = await readProject(f.root);
   if (snapshot.kind !== "ok") throw new Error(snapshot.message);
-  const ours = Object.fromEntries(snapshot.changes.map((row) => [row.id, row.kind === "change" ? row.tasks : row.message]));
+  const ours = Object.fromEntries(
+    snapshot.changes.map(({ id, versions: [v] }) => [id, v!.kind === "change" ? v!.tasks : v!.message]),
+  );
 
   expect(Object.keys(theirs).sort()).toEqual(Object.keys(TASK_FILES).sort());
   expect(ours).toEqual(theirs);

@@ -2,17 +2,18 @@ import { describe, expect, test } from "bun:test";
 import { chmod, lstat, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { readProject, type ChangeSummary, type ProjectSnapshot } from "../src/project/read.ts";
-import { useFixtures } from "./fixture.ts";
+import { sept, useFixtures } from "./fixture.ts";
 
 const fixture = useFixtures();
 
-/** The change rows of an ok snapshot, keyed by id; fails the test on a Project error. */
+/** The Headline version of each Change of an ok snapshot, keyed by id; fails the test on a Project error. */
 function changesOf(snapshot: ProjectSnapshot): Map<string, ChangeSummary> {
   if (snapshot.kind !== "ok") throw new Error(`expected ok snapshot, got: ${snapshot.message}`);
   const rows = new Map<string, ChangeSummary>();
-  for (const row of snapshot.changes) {
-    if (row.kind !== "change") throw new Error(`unexpected error row for ${row.id}: ${row.message}`);
-    rows.set(row.id, row);
+  for (const { id, versions } of snapshot.changes) {
+    const headline = versions[0]!;
+    if (headline.kind !== "change") throw new Error(`unexpected error row for ${id}: ${headline.message}`);
+    rows.set(id, headline);
   }
   return rows;
 }
@@ -75,8 +76,6 @@ describe("Artifact presence", () => {
 });
 
 describe("Change time", () => {
-  const sept = (day: number, time = "10:00") => new Date(`2026-09-${String(day).padStart(2, "0")}T${time}:00Z`);
-
   test("committed change: latest commit touching the directory, regardless of mtimes", async () => {
     const f = await fixture();
     await f.write("openspec/changes/add-auth/proposal.md", "v1", sept(20));
@@ -174,7 +173,7 @@ describe("Errors", () => {
   test("openspec/ without a changes folder has no Changes", async () => {
     const f = await fixture({ git: false });
     await f.write("openspec/config.yaml", "schema: spec-driven\n");
-    expect(await readProject(f.root)).toEqual({ kind: "ok", changes: [] });
+    expect(await readProject(f.root)).toEqual({ kind: "ok", changes: [], labelled: false });
   });
 
   test("a failing git command is a Project error", async () => {
@@ -194,10 +193,10 @@ describe("Errors", () => {
     await chmod(join(f.root, "openspec/changes/broken/tasks.md"), 0o000);
     const snapshot = await readProject(f.root);
     if (snapshot.kind !== "ok") throw new Error(snapshot.message);
-    const broken = snapshot.changes.find((row) => row.id === "broken");
+    const broken = snapshot.changes.find((change) => change.id === "broken")?.versions[0];
     expect(broken?.kind).toBe("error");
     expect(broken?.kind === "error" && broken.message).toContain("permission denied");
-    expect(snapshot.changes.find((row) => row.id === "fine")).toMatchObject({ kind: "change", tasks: { done: 1, total: 1 } });
+    expect(snapshot.changes.find((change) => change.id === "fine")?.versions[0]).toMatchObject({ kind: "change", tasks: { done: 1, total: 1 } });
   });
 });
 
@@ -226,5 +225,28 @@ describe("Reading never writes", () => {
     const before = await listing(f.root);
     await readProject(f.root);
     expect(await listing(f.root)).toEqual(before);
+  });
+
+  test("other worktrees, their index files and the shared git directory are untouched", async () => {
+    const f = await fixture();
+    await f.write("openspec/changes/add-auth/tasks.md", "- [ ] a\n");
+    await f.write("openspec/changes/add-auth/proposal.md", "same\n");
+    await f.commit(new Date("2026-09-01T00:00:00Z"));
+    await f.git("branch", "nowhere");
+    await f.git("checkout", "-q", "nowhere");
+    await f.write("openspec/changes/add-auth/design.md", "on a branch checked out nowhere\n");
+    await f.commit(new Date("2026-09-02T00:00:00Z"));
+    await f.git("checkout", "-q", "main");
+    const wt = await f.worktree("wt-auth", { branch: "add-auth" });
+    // Same content, new mtime: a plain `git status` there would rewrite that worktree's index.
+    await wt.write("openspec/changes/add-auth/proposal.md", "same\n", new Date("2026-09-03T00:00:00Z"));
+    await wt.write("openspec/changes/add-auth/tasks.md", "- [x] a\n", new Date("2026-09-04T00:00:00Z"));
+    await wt.write("openspec/changes/fresh/proposal.md", "untracked\n");
+    const before = [await listing(f.root), await listing(wt.root)];
+    const snapshot = await readProject(f.root);
+    expect(snapshot.kind === "ok" && snapshot.changes.flatMap((c) => c.versions.map((v) => v.source)).sort()).toEqual(
+      ["main", "nowhere", "wt:wt-auth", "wt:wt-auth"],
+    );
+    expect([await listing(f.root), await listing(wt.root)]).toEqual(before);
   });
 });

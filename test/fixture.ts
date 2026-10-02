@@ -7,6 +7,9 @@ import { $ } from "bun";
 /** Every fixture file gets this mtime unless a test sets another, so no result depends on the wall clock. */
 export const DEFAULT_MTIME = new Date("2026-01-01T00:00:00Z");
 
+/** A September 2026 date at `time` UTC, for commit and mtime dates. */
+export const sept = (day: number, time = "10:00") => new Date(`2026-09-${String(day).padStart(2, "0")}T${time}:00Z`);
+
 const GIT_ENV = {
   ...process.env,
   GIT_CONFIG_GLOBAL: "/dev/null",
@@ -18,7 +21,11 @@ const GIT_ENV = {
 };
 
 export class Fixture {
-  constructor(readonly root: string) {}
+  /** `track` registers a directory for removal after the test. */
+  constructor(
+    readonly root: string,
+    private readonly track: (dir: string) => void,
+  ) {}
 
   /** Writes `content` to `rel` (relative to the fixture root), creating parent directories. */
   async write(rel: string, content = "", mtime = DEFAULT_MTIME): Promise<void> {
@@ -33,12 +40,29 @@ export class Fixture {
     await $`git ${args}`.cwd(this.root).env(GIT_ENV).quiet();
   }
 
-  /** Stages everything and commits with the given author and committer date. */
+  /**
+   * Stages everything and commits with the given author and committer date. Fixture files share one
+   * mtime, so an edit that keeps a file's size looks unchanged to git's stat check: after `add -A`
+   * stages new and deleted files, `--renormalize` re-reads every tracked file's contents.
+   */
   async commit(date: Date, message = "fixture commit"): Promise<void> {
     const iso = date.toISOString();
     const env = { ...GIT_ENV, GIT_AUTHOR_DATE: iso, GIT_COMMITTER_DATE: iso };
     await $`git add -A`.cwd(this.root).env(env).quiet();
+    await $`git add -A --renormalize`.cwd(this.root).env(env).quiet();
     await $`git commit -q -m ${message}`.cwd(this.root).env(env).quiet();
+  }
+
+  /**
+   * Adds a linked worktree in its own temp directory as `<tmp>/<folder>`, on a new branch created at
+   * the current commit or detached there, and returns a Fixture rooted in it.
+   */
+  async worktree(folder: string, at: { branch: string } | { detach: true }): Promise<Fixture> {
+    const parent = await mkdtemp(join(tmpdir(), "osviz-worktree-"));
+    this.track(parent);
+    const dir = join(parent, folder);
+    await this.git("worktree", "add", "-q", ...("branch" in at ? ["-b", at.branch] : ["--detach"]), dir);
+    return new Fixture(dir, this.track);
   }
 }
 
@@ -51,10 +75,11 @@ export function useFixtures(): (options?: { git?: boolean }) => Promise<Fixture>
   afterEach(async () => {
     await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
   });
+  const track = (dir: string) => void roots.push(dir);
   return async ({ git = true } = {}) => {
     const root = await mkdtemp(join(tmpdir(), "osviz-fixture-"));
-    roots.push(root);
+    track(root);
     if (git) await $`git init -q -b main`.cwd(root).env(GIT_ENV).quiet();
-    return new Fixture(root);
+    return new Fixture(root, track);
   };
 }

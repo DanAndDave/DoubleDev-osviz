@@ -6,7 +6,7 @@ import { render } from "ink-testing-library";
 import { useEffect } from "react";
 import { readProject } from "../src/project/read.ts";
 import { App } from "../src/ui/App.tsx";
-import { useFixtures } from "./fixture.ts";
+import { sept, useFixtures } from "./fixture.ts";
 
 const fixture = useFixtures();
 
@@ -38,6 +38,31 @@ function styledLine(frame: string | undefined, text: string): string {
   return line;
 }
 
+const INVERSE = "\u001B[7m";
+const DOWN = "\u001B[B";
+const UP = "\u001B[A";
+const ENTER = "\r";
+
+/** The rows drawn in inverse video, styling removed. */
+function selectedLines(frame: string | undefined): string[] {
+  return (frame ?? "")
+    .split("\n")
+    .filter((line) => line.includes(INVERSE))
+    .map((line) => stripVTControlCharacters(line));
+}
+
+/** Ids of the rows drawn in inverse video. */
+function selected(frame: string | undefined): string[] {
+  return selectedLines(frame).map((line) => line.split(" ")[0]!);
+}
+
+async function press(app: { stdin: { write(data: string): void } }, ...keys: string[]): Promise<void> {
+  for (const key of keys) {
+    app.stdin.write(key);
+    await settle();
+  }
+}
+
 describe("Change rows", () => {
   test("change in progress: id, artifact letters, bar 70% full, 7/10", async () => {
     const f = await fixture();
@@ -45,7 +70,7 @@ describe("Change rows", () => {
     await f.write("openspec/changes/add-auth/specs/auth/spec.md");
     await f.write("openspec/changes/add-auth/tasks.md", `${"- [x] t\n".repeat(7)}${"- [ ] t\n".repeat(3)}`);
     const { lastFrame } = await show(f.root);
-    expect(plainLines(lastFrame())).toEqual([`add-auth  P S D T  ${"█".repeat(14)}${"░".repeat(6)}  7/10`]);
+    expect(plainLines(lastFrame())).toEqual([`add-auth  P S D T  ${"█".repeat(14)}${"░".repeat(6)}  7/10  main`]);
     const row = styledLine(lastFrame(), "add-auth");
     for (const present of ["P", "S", "T"]) expect(row).toContain(BOLD(present));
     expect(row).toContain(DIM("D"));
@@ -55,18 +80,26 @@ describe("Change rows", () => {
     const f = await fixture();
     await f.write("openspec/changes/idea/proposal.md");
     const { lastFrame } = await show(f.root);
-    expect(plainLines(lastFrame())).toEqual([`idea  P S D T  ${"░".repeat(20)}  0/0`]);
+    expect(plainLines(lastFrame())).toEqual([`idea  P S D T  ${"░".repeat(20)}  0/0  main`]);
   });
 
-  test("ids are padded so the columns line up", async () => {
+  test("ids, progress and labels are padded so the columns line up", async () => {
     const f = await fixture();
     await f.write("openspec/changes/a/proposal.md", "", new Date("2026-09-02T00:00:00Z"));
+    await f.write("openspec/changes/a/tasks.md", `${"- [x] t\n".repeat(10)}`, new Date("2026-09-02T00:00:00Z"));
     await f.write("openspec/changes/longer-id/proposal.md", "", new Date("2026-09-01T00:00:00Z"));
     const { lastFrame } = await show(f.root);
     expect(plainLines(lastFrame())).toEqual([
-      `a          P S D T  ${"░".repeat(20)}  0/0`,
-      `longer-id  P S D T  ${"░".repeat(20)}  0/0`,
+      `a          P S D T  ${"█".repeat(20)}  10/10  main`,
+      `longer-id  P S D T  ${"░".repeat(20)}  0/0    main`,
     ]);
+  });
+
+  test("a Project outside git has no label column", async () => {
+    const f = await fixture({ git: false });
+    await f.write("openspec/changes/idea/proposal.md");
+    const { lastFrame } = await show(f.root);
+    expect(plainLines(lastFrame())).toEqual([`idea  P S D T  ${"░".repeat(20)}  0/0`]);
   });
 
   test("archived changes get no row", async () => {
@@ -107,30 +140,11 @@ describe("Row order", () => {
 });
 
 describe("Selection", () => {
-  const INVERSE = "\u001B[7m";
-  const DOWN = "\u001B[B";
-  const UP = "\u001B[A";
-
-  /** Ids of the rows drawn in inverse video. */
-  function selected(frame: string | undefined): string[] {
-    return (frame ?? "")
-      .split("\n")
-      .filter((line) => line.includes(INVERSE))
-      .map((line) => stripVTControlCharacters(line).split(" ")[0]!);
-  }
-
   async function threeRows() {
     const f = await fixture();
     for (const id of ["alpha", "bravo", "charlie"]) await f.write(`openspec/changes/${id}/proposal.md`);
     await f.commit(new Date("2026-09-01T00:00:00Z"));
     return show(f.root);
-  }
-
-  async function press(app: { stdin: { write(data: string): void } }, ...keys: string[]): Promise<void> {
-    for (const key of keys) {
-      app.stdin.write(key);
-      await settle();
-    }
   }
 
   test("starts on the first row", async () => {
@@ -184,8 +198,106 @@ describe("Error rows", () => {
     await chmod(join(f.root, "openspec/changes/broken/tasks.md"), 0o000);
     const { lastFrame } = await show(f.root);
     const lines = plainLines(lastFrame());
-    expect(lines[0]).toStartWith("broken  ✗ EACCES: permission denied");
-    expect(lines.at(-1)).toBe(`fine    P S D T  ${"█".repeat(20)}  1/1`);
+    expect(lines[0]).toStartWith("broken  main  ✗ EACCES: permission denied");
+    expect(lines.at(-1)).toBe(`fine    P S D T  ${"█".repeat(20)}  1/1  main`);
+  });
+
+  test.skipIf(process.getuid?.() === 0)("an unreadable version in another worktree is an error row with its label", async () => {
+    const f = await fixture();
+    await f.write("openspec/changes/a/tasks.md", "- [x] a\n");
+    await f.commit(sept(1));
+    const wt = await f.worktree("wt-a", { branch: "wt-a" });
+    await wt.write("openspec/changes/a/tasks.md", "- [x] a\n- [ ] b\n", sept(5));
+    await chmod(join(wt.root, "openspec/changes/a/tasks.md"), 0o000);
+    const app = await show(f.root);
+    expect(plainLines(app.lastFrame())).toEqual([`a  P S D T  ${"█".repeat(20)}  1/1  main  +1`]);
+    await press(app, ENTER);
+    const lines = plainLines(app.lastFrame());
+    expect(lines[0]).toBe(`a  P S D T  ${"█".repeat(20)}  1/1  main`);
+    expect(lines[1]).toStartWith("a  wt:wt-a  ✗ EACCES: permission denied");
+  });
+});
+
+const TASKS = (done: number, total: number) => `${"- [x] t\n".repeat(done)}${"- [ ] t\n".repeat(total - done)}`;
+
+describe("Sources in rows", () => {
+  test("Headline from a worktree: its progress, label and +1", async () => {
+    const f = await fixture();
+    await f.write("openspec/changes/add-auth/tasks.md", TASKS(4, 10));
+    await f.commit(sept(1));
+    const wt = await f.worktree("wt-auth", { branch: "add-auth" });
+    await wt.write("openspec/changes/add-auth/tasks.md", TASKS(7, 10), sept(5));
+    const { lastFrame } = await show(f.root);
+    expect(plainLines(lastFrame())).toEqual([`add-auth  P S D T  ${"█".repeat(14)}${"░".repeat(6)}  7/10  wt:wt-auth  +1`]);
+  });
+
+  test("ordered by Headline version: a branch's newer version lifts its Change", async () => {
+    const f = await fixture();
+    await f.write("openspec/changes/a/tasks.md", TASKS(0, 1));
+    await f.commit(sept(1));
+    await f.write("openspec/changes/b/tasks.md", TASKS(0, 1));
+    await f.commit(sept(5));
+    await f.git("checkout", "-q", "-b", "feat");
+    await f.write("openspec/changes/a/tasks.md", TASKS(1, 1));
+    await f.commit(sept(9));
+    await f.git("checkout", "-q", "main");
+    const { lastFrame } = await show(f.root);
+    expect(plainLines(lastFrame())).toEqual([
+      `a  P S D T  ${"█".repeat(20)}  1/1  feat  +1`,
+      `b  P S D T  ${"░".repeat(20)}  0/1  main`,
+    ]);
+  });
+});
+
+describe("Expanding a Change", () => {
+  /** `add-auth` with versions in `wt:wt-auth` (newest, 3/4), `fix` (2/4) and `main` (oldest, 1/4), plus `zeta` on `main`. */
+  async function threeVersions() {
+    const f = await fixture();
+    await f.write("openspec/changes/add-auth/tasks.md", TASKS(1, 4));
+    await f.write("openspec/changes/zeta/proposal.md");
+    await f.commit(sept(1));
+    await f.git("checkout", "-q", "-b", "fix");
+    await f.write("openspec/changes/add-auth/tasks.md", TASKS(2, 4));
+    await f.commit(sept(3));
+    await f.git("checkout", "-q", "main");
+    const wt = await f.worktree("wt-auth", { branch: "add-auth" });
+    await wt.write("openspec/changes/add-auth/tasks.md", TASKS(3, 4), sept(5));
+    return show(f.root);
+  }
+
+  test("Enter expands the selected Change into one row per version, newest first", async () => {
+    const app = await threeVersions();
+    expect(plainLines(app.lastFrame())).toEqual([
+      `add-auth  P S D T  ${"█".repeat(15)}${"░".repeat(5)}  3/4  wt:wt-auth  +2`,
+      `zeta      P S D T  ${"░".repeat(20)}  0/0  main`,
+    ]);
+    await press(app, ENTER);
+    expect(plainLines(app.lastFrame())).toEqual([
+      `add-auth  P S D T  ${"█".repeat(15)}${"░".repeat(5)}  3/4  wt:wt-auth`,
+      `add-auth  P S D T  ${"█".repeat(10)}${"░".repeat(10)}  2/4  fix`,
+      `add-auth  P S D T  ${"█".repeat(5)}${"░".repeat(15)}  1/4  main`,
+      `zeta      P S D T  ${"░".repeat(20)}  0/0  main`,
+    ]);
+  });
+
+  test("j moves into an expanded Change's version rows", async () => {
+    const app = await threeVersions();
+    await press(app, ENTER, "j");
+    expect(selectedLines(app.lastFrame())).toEqual([`add-auth  P S D T  ${"█".repeat(10)}${"░".repeat(10)}  2/4  fix`]);
+  });
+
+  test("Enter on any version row collapses the Change and selects its row", async () => {
+    const app = await threeVersions();
+    await press(app, ENTER, "j", "j", ENTER);
+    expect(plainLines(app.lastFrame())).toHaveLength(2);
+    expect(selectedLines(app.lastFrame())).toEqual([`add-auth  P S D T  ${"█".repeat(15)}${"░".repeat(5)}  3/4  wt:wt-auth  +2`]);
+  });
+
+  test("expanding a Change below keeps the selection on that Change", async () => {
+    const app = await threeVersions();
+    await press(app, ENTER, "j", "j", "j", ENTER, "k", ENTER);
+    expect(plainLines(app.lastFrame())).toHaveLength(2);
+    expect(selected(app.lastFrame())).toEqual(["add-auth"]);
   });
 });
 
