@@ -1,6 +1,6 @@
-import { type ChangeVersion, changeSummary, type SourceRead } from "./change.ts";
+import { type ChangeDir, type ChangeVersion, changeSummary, type SourceRead } from "./change.ts";
 import { git, gitBytes } from "./git.ts";
-import { changeIdReader, logArgs, parseLog } from "./history.ts";
+import { changeDirReader, logArgs, parseLog } from "./history.ts";
 
 /**
  * Reads the Change versions in commit `rev` from git objects, without checking anything out.
@@ -8,7 +8,7 @@ import { changeIdReader, logArgs, parseLog } from "./history.ts";
  * names the Project's folder; `prefix` is the Project's path inside the repository.
  */
 export async function readCommitSource(cwd: string, rev: string, label: string, prefix: string): Promise<SourceRead> {
-  const changeIdOf = changeIdReader(prefix);
+  const changeDirOf = changeDirReader(prefix);
   const [tree, log] = await Promise.all([
     git(cwd, ["ls-tree", "-r", "-z", "--full-name", "--name-only", rev, "--", "openspec/changes"]),
     git(cwd, logArgs(rev)),
@@ -16,33 +16,35 @@ export async function readCommitSource(cwd: string, rev: string, label: string, 
   if (!tree.ok) return { kind: "error", message: tree.message };
   if (!log.ok) return { kind: "error", message: log.message };
 
-  // Every file below `<id>/` in the tree, as a path relative to the change directory.
-  const files = new Map<string, string[]>();
+  // Every file below each change directory in the tree, as a path relative to that directory.
+  const files = new Map<string, { changeDir: ChangeDir; paths: string[] }>();
   const changesPrefix = `${prefix}openspec/changes/`;
   for (const path of tree.stdout.split("\0")) {
-    const id = changeIdOf(path);
-    if (id === undefined || id === "archive") continue;
-    const rest = path.slice(changesPrefix.length + id.length + 1);
-    files.set(id, [...(files.get(id) ?? []), rest]);
+    const changeDir = changeDirOf(path);
+    if (changeDir === undefined) continue;
+    const rest = path.slice(changesPrefix.length + changeDir.dir.length + 1);
+    const entry = files.get(changeDir.dir) ?? { changeDir, paths: [] };
+    entry.paths.push(rest);
+    files.set(changeDir.dir, entry);
   }
 
-  const withTasks = [...files].filter(([, paths]) => paths.includes("tasks.md")).map(([id]) => id);
-  const contents = await readBlobs(cwd, withTasks.map((id) => `${rev}:${changesPrefix}${id}/tasks.md`));
+  const withTasks = [...files.keys()].filter((dir) => files.get(dir)!.paths.includes("tasks.md"));
+  const contents = await readBlobs(cwd, withTasks.map((dir) => `${rev}:${changesPrefix}${dir}/tasks.md`));
   if (contents.kind === "error") return contents;
-  const tasksOf = new Map(withTasks.map((id, i) => [id, contents.blobs[i]!]));
+  const tasksOf = new Map(withTasks.map((dir, i) => [dir, contents.blobs[i]!]));
 
-  const committed = parseLog(log.stdout, changeIdOf);
+  const committed = parseLog(log.stdout, changeDirOf);
   const versions: ChangeVersion[] = [];
-  for (const [id, paths] of files) {
-    const changeTime = committed.get(id);
+  for (const [dir, { changeDir, paths }] of files) {
+    const changeTime = committed.get(dir);
     // A path in a commit's tree was added by a commit reachable from it, so this means a damaged repository.
-    if (changeTime === undefined) return { kind: "error", message: `no commit touches ${id} in ${label}` };
+    if (changeTime === undefined) return { kind: "error", message: `no commit touches ${dir} in ${label}` };
     const artifacts = {
       proposal: paths.includes("proposal.md"),
       specs: paths.some((p) => p.startsWith("specs/") && p.endsWith(".md")),
       design: paths.includes("design.md"),
     };
-    versions.push(changeSummary(id, label, artifacts, tasksOf.get(id), changeTime));
+    versions.push(changeSummary(changeDir, label, artifacts, tasksOf.get(dir), changeTime));
   }
   return { kind: "ok", versions };
 }

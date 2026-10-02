@@ -1,6 +1,14 @@
 import { Box, Text, useApp, useInput } from "ink";
 import { useState } from "react";
-import type { Artifacts, Change, ChangeSummary, ChangeVersion, ProjectSnapshot } from "../project/read.ts";
+import {
+  type Artifacts,
+  type Change,
+  type ChangeSummary,
+  type ChangeVersion,
+  isArchived,
+  isReadyToArchive,
+  type ProjectSnapshot,
+} from "../project/read.ts";
 
 const BAR_WIDTH = 20;
 const ARTIFACT_LETTERS: [keyof Artifacts, string][] = [
@@ -20,14 +28,10 @@ interface Row {
 
 /** The dashboard for one Project snapshot. Renders only; never reads the filesystem or git. */
 export function App({ snapshot }: { snapshot: ProjectSnapshot }) {
-  const changes = snapshot.kind === "ok" ? snapshot.changes : [];
   const [selected, setSelected] = useState(0);
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
-  const rows = changes.flatMap((change): Row[] =>
-    expanded.has(change.id)
-      ? change.versions.map((version) => ({ change, version, others: 0 }))
-      : [{ change, version: change.versions[0]!, others: change.versions.length - 1 }],
-  );
+  const [showArchived, setShowArchived] = useState(false);
+  const rows = rowsOf(snapshot, expanded, showArchived);
   const { exit } = useApp();
   useInput((input, key) => {
     if (input === "q") exit();
@@ -40,6 +44,12 @@ export function App({ snapshot }: { snapshot: ProjectSnapshot }) {
       if (!next.delete(id)) next.add(id);
       setExpanded(next);
       setSelected(rows.findIndex((r) => r.change.id === id));
+    }
+    if (input === "a") {
+      setShowArchived(!showArchived);
+      // The snapshot is unchanged, so the selected row's Change and version objects identify it among the new rows.
+      const next = rowsOf(snapshot, expanded, !showArchived).findIndex((r) => r.change === row?.change && r.version === row.version);
+      setSelected(Math.max(next, 0));
     }
   });
 
@@ -65,10 +75,30 @@ export function App({ snapshot }: { snapshot: ProjectSnapshot }) {
               <Text color="red">✗ {row.version.message}</Text>
             </Text>
           )}
+          <Marker row={row} />
         </Text>
       ))}
     </Box>
   );
+}
+
+/** The visible rows: archived Changes only when shown, one row per Change, or one per version when expanded. */
+function rowsOf(snapshot: ProjectSnapshot, expanded: ReadonlySet<string>, showArchived: boolean): Row[] {
+  if (snapshot.kind !== "ok") return [];
+  return snapshot.changes
+    .filter((change) => showArchived || !isArchived(change))
+    .flatMap((change): Row[] =>
+      expanded.has(change.id)
+        ? change.versions.map((version) => ({ change, version, others: 0 }))
+        : [{ change, version: change.versions[0]!, others: change.versions.length - 1 }],
+    );
+}
+
+/** `archived` on any archived version's row; `✓ ready to archive` on a Ready to archive Change's Headline row. */
+function Marker({ row }: { row: Row }) {
+  if (row.version.archived) return <Text>{"  "}<Text dimColor>archived</Text></Text>;
+  if (row.version !== row.change.versions[0] || !isReadyToArchive(row.change)) return null;
+  return <Text>{"  "}<Text color="green">✓ ready to archive</Text></Text>;
 }
 
 /** `widths.label` is undefined when the Project has no Source labels, which drops the label and `+N` columns. */

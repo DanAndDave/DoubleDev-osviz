@@ -45,14 +45,114 @@ describe("Task progress", () => {
 });
 
 describe("Active Changes", () => {
-  test("every directory under openspec/changes except archive is a Change; files are not", async () => {
+  test("every directory under openspec/changes except archive is an active Change; files are not", async () => {
     const f = await fixture();
     await f.write("openspec/changes/add-auth/proposal.md");
     await f.write("openspec/changes/fix-login/proposal.md");
     await f.write("openspec/changes/archive/2026-08-01-old-thing/proposal.md");
     await f.write("openspec/changes/README.md", "# notes\n");
     const rows = changesOf(await readProject(f.root));
-    expect([...rows.keys()].sort()).toEqual(["add-auth", "fix-login"]);
+    expect([...rows].filter(([, headline]) => !headline.archived).map(([id]) => id).sort()).toEqual(["add-auth", "fix-login"]);
+  });
+});
+
+describe("Archived Change versions", () => {
+  /** Change `id`'s versions as `<source> <dir> <done>/<total> <Change time>`, Headline first. */
+  function versionsOf(snapshot: ProjectSnapshot, id: string): string[] {
+    if (snapshot.kind !== "ok") throw new Error(snapshot.message);
+    return (snapshot.changes.find((c) => c.id === id)?.versions ?? []).map((v) =>
+      v.kind === "change"
+        ? `${v.source} ${v.archived ? "archived" : "active"} ${v.dir} ${v.tasks.done}/${v.tasks.total} ${v.changeTime.toISOString()}`
+        : `${v.source} ${v.dir} ✗ ${v.message}`,
+    );
+  }
+
+  test("an archive directory is an archived version of the Change named after its date", async () => {
+    const f = await fixture();
+    await f.write("openspec/changes/archive/2026-08-01-add-auth/tasks.md", "- [x] a\n- [x] b\n- [x] c\n");
+    await f.commit(sept(1));
+    expect(versionsOf(await readProject(f.root), "add-auth")).toEqual([
+      `main archived archive/2026-08-01-add-auth 3/3 ${sept(1).toISOString()}`,
+    ]);
+  });
+
+  test("active and archived in one Source are two versions, each dated by its own directory", async () => {
+    const f = await fixture();
+    await f.write("openspec/changes/add-auth/tasks.md", "- [ ] a\n");
+    await f.commit(sept(1));
+    await f.write("openspec/changes/archive/2026-08-01-add-auth/tasks.md", "- [x] a\n");
+    await f.commit(sept(2));
+    expect(versionsOf(await readProject(f.root), "add-auth").sort()).toEqual([
+      `main active add-auth 0/1 ${sept(1).toISOString()}`,
+      `main archived archive/2026-08-01-add-auth 1/1 ${sept(2).toISOString()}`,
+    ]);
+  });
+
+  test("an uncommitted archive directory is dated by its files' mtimes", async () => {
+    const f = await fixture({ git: false });
+    await f.write("openspec/changes/archive/2026-08-01-add-auth/proposal.md", "", sept(4));
+    expect(versionsOf(await readProject(f.root), "add-auth")).toEqual([
+      `undefined archived archive/2026-08-01-add-auth 0/0 ${sept(4).toISOString()}`,
+    ]);
+  });
+
+  test("archive entries not named <YYYY-MM-DD>-<id> are ignored", async () => {
+    const f = await fixture();
+    await f.write("openspec/changes/archive/notes/proposal.md");
+    await f.write("openspec/changes/archive/2026-8-01-short/proposal.md");
+    await f.write("openspec/changes/archive/README.md", "# archive\n");
+    await f.commit(sept(1));
+    expect(await readProject(f.root)).toEqual({ kind: "ok", changes: [], labelled: true });
+  });
+
+  test("archived on a branch checked out nowhere: dated by the branch's commit, artifacts from its tree", async () => {
+    const f = await fixture();
+    await f.write("openspec/changes/other/proposal.md");
+    await f.commit(sept(1));
+    await f.git("checkout", "-q", "-b", "add-auth");
+    await f.write("openspec/changes/archive/2026-09-10-add-auth/tasks.md", "- [x] a\n- [ ] b\n");
+    await f.write("openspec/changes/archive/2026-09-10-add-auth/design.md");
+    await f.write("openspec/changes/archive/notes/proposal.md");
+    await f.commit(sept(10, "12:00"));
+    await f.git("checkout", "-q", "main");
+    const snapshot = await readProject(f.root);
+    expect(versionsOf(snapshot, "add-auth")).toEqual([
+      `add-auth archived archive/2026-09-10-add-auth 1/2 ${sept(10, "12:00").toISOString()}`,
+    ]);
+    expect(changesOf(snapshot).get("add-auth")?.artifacts).toEqual({ proposal: false, specs: false, design: true, tasks: true });
+    expect(snapshot.kind === "ok" && snapshot.changes.map((c) => c.id).sort()).toEqual(["add-auth", "other"]);
+  });
+
+  test("an archived version is the Headline even when an active version is newer", async () => {
+    const f = await fixture();
+    await f.write("openspec/changes/archive/2026-09-01-add-auth/tasks.md", "- [x] a\n");
+    await f.write("openspec/changes/later/proposal.md");
+    await f.commit(sept(1));
+    const wt = await f.worktree("wt-auth", { branch: "stale" });
+    await wt.write("openspec/changes/add-auth/tasks.md", "- [x] a\n- [ ] b\n", sept(5));
+    await f.write("openspec/changes/later/tasks.md", "", sept(3));
+    const snapshot = await readProject(f.root);
+    expect(versionsOf(snapshot, "add-auth")).toEqual([
+      `main archived archive/2026-09-01-add-auth 1/1 ${sept(1).toISOString()}`,
+      `wt:wt-auth active add-auth 1/2 ${sept(5).toISOString()}`,
+    ]);
+    // Changes are ordered by their Headline's Change time: the archive's, not the newer active version's.
+    expect(snapshot.kind === "ok" && snapshot.changes.map((c) => c.id)).toEqual(["later", "add-auth"]);
+  });
+
+  test("only the Headline is moved first: the other versions stay in Change time order", async () => {
+    const f = await fixture();
+    await f.write("openspec/changes/archive/2026-09-01-add-auth/tasks.md", "- [x] a\n");
+    await f.commit(sept(1));
+    const active = await f.worktree("wt-active", { branch: "stale" });
+    await active.write("openspec/changes/add-auth/tasks.md", "- [ ] a\n", sept(5));
+    const again = await f.worktree("wt-again", { branch: "again" });
+    await again.write("openspec/changes/archive/2026-09-03-add-auth/tasks.md", "- [x] a\n- [x] b\n", sept(3));
+    expect(versionsOf(await readProject(f.root), "add-auth")).toEqual([
+      `wt:wt-again archived archive/2026-09-03-add-auth 2/2 ${sept(3).toISOString()}`,
+      `wt:wt-active active add-auth 0/1 ${sept(5).toISOString()}`,
+      `main archived archive/2026-09-01-add-auth 1/1 ${sept(1).toISOString()}`,
+    ]);
   });
 });
 

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { chmod } from "node:fs/promises";
+import { chmod, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import { render } from "ink-testing-library";
@@ -12,6 +12,7 @@ const fixture = useFixtures();
 
 const BOLD = (s: string) => `\u001B[1m${s}\u001B[22m`;
 const DIM = (s: string) => `\u001B[2m${s}\u001B[22m`;
+const GREEN = (s: string) => `\u001B[32m${s}\u001B[39m`;
 
 async function settle(): Promise<void> {
   const { promise, resolve } = Promise.withResolvers<void>();
@@ -90,7 +91,7 @@ describe("Change rows", () => {
     await f.write("openspec/changes/longer-id/proposal.md", "", new Date("2026-09-01T00:00:00Z"));
     const { lastFrame } = await show(f.root);
     expect(plainLines(lastFrame())).toEqual([
-      `a          P S D T  ${"█".repeat(20)}  10/10  main`,
+      `a          P S D T  ${"█".repeat(20)}  10/10  main  ✓ ready to archive`,
       `longer-id  P S D T  ${"░".repeat(20)}  0/0    main`,
     ]);
   });
@@ -101,21 +102,161 @@ describe("Change rows", () => {
     const { lastFrame } = await show(f.root);
     expect(plainLines(lastFrame())).toEqual([`idea  P S D T  ${"░".repeat(20)}  0/0`]);
   });
+});
 
-  test("archived changes get no row", async () => {
+describe("Archived Changes", () => {
+  test("an archived Change gets no row", async () => {
     const f = await fixture();
     await f.write("openspec/changes/archive/2026-08-01-old-thing/proposal.md");
     await f.write("openspec/changes/live/proposal.md");
     const { lastFrame } = await show(f.root);
-    expect(lastFrame()).not.toContain("old-thing");
-    expect(lastFrame()).toContain("live");
+    expect(plainLines(lastFrame())).toEqual([`live  P S D T  ${"░".repeat(20)}  0/0  main`]);
   });
 
-  test("no active changes says so", async () => {
+  test("archived on the Base hides a stale active version in a worktree", async () => {
     const f = await fixture();
-    await f.write("openspec/changes/archive/2026-08-01-old-thing/proposal.md");
+    await f.write("openspec/changes/add-auth/tasks.md", TASKS(1, 2));
+    await f.commit(sept(1));
+    const wt = await f.worktree("wt-auth", { branch: "add-auth" });
+    await mkdir(join(f.root, "openspec/changes/archive"));
+    await f.git("mv", "openspec/changes/add-auth", "openspec/changes/archive/2026-09-02-add-auth");
+    await f.commit(sept(2));
+    await wt.write("openspec/changes/add-auth/tasks.md", TASKS(2, 2), sept(5));
     const { lastFrame } = await show(f.root);
     expect(plainLines(lastFrame())).toEqual(["No active changes"]);
+  });
+
+  test("a Project whose Changes are all archived says there are no active changes until a is pressed", async () => {
+    const f = await fixture();
+    await f.write("openspec/changes/archive/2026-08-01-old-thing/proposal.md");
+    const app = await show(f.root);
+    expect(plainLines(app.lastFrame())).toEqual(["No active changes"]);
+    await press(app, "a");
+    expect(plainLines(app.lastFrame())).toEqual([`old-thing  P S D T  ${"░".repeat(20)}  0/0  main  archived`]);
+  });
+
+  /** Active `fresh` (2026-09-05), archived `old-thing` (2026-09-03) and active `live` (2026-09-01), all on `main`. */
+  async function archivedBetween() {
+    const f = await fixture();
+    await f.write("openspec/changes/live/proposal.md");
+    await f.commit(sept(1));
+    await f.write("openspec/changes/archive/2026-09-03-old-thing/proposal.md");
+    await f.commit(sept(3));
+    await f.write("openspec/changes/fresh/proposal.md");
+    await f.commit(sept(5));
+    return show(f.root);
+  }
+
+  test("a shows archived Changes in Change time order with a dim archived marker; a again hides them", async () => {
+    const app = await archivedBetween();
+    expect(plainLines(app.lastFrame()).map((line) => line.split(" ")[0])).toEqual(["fresh", "live"]);
+    await press(app, "a");
+    expect(plainLines(app.lastFrame())).toEqual([
+      `fresh      P S D T  ${"░".repeat(20)}  0/0  main`,
+      `old-thing  P S D T  ${"░".repeat(20)}  0/0  main  archived`,
+      `live       P S D T  ${"░".repeat(20)}  0/0  main`,
+    ]);
+    expect(styledLine(app.lastFrame(), "old-thing")).toContain(DIM("archived"));
+    await press(app, "a");
+    expect(plainLines(app.lastFrame()).map((line) => line.split(" ")[0])).toEqual(["fresh", "live"]);
+  });
+
+  test("a keeps the selected row selected when it is still shown", async () => {
+    const app = await archivedBetween();
+    await press(app, "a", "j", "j");
+    expect(selected(app.lastFrame())).toEqual(["live"]);
+    await press(app, "a");
+    expect(selected(app.lastFrame())).toEqual(["live"]);
+    await press(app, "a");
+    expect(selected(app.lastFrame())).toEqual(["live"]);
+  });
+
+  test("a selects the first row when it hides the selected archived Change", async () => {
+    const app = await archivedBetween();
+    await press(app, "a", "j");
+    expect(selected(app.lastFrame())).toEqual(["old-thing"]);
+    await press(app, "a");
+    expect(selected(app.lastFrame())).toEqual(["fresh"]);
+  });
+
+  test("an archived Headline is shown over a newer active version, with its label and +1", async () => {
+    const f = await fixture();
+    await f.write("openspec/changes/add-auth/tasks.md", TASKS(1, 2));
+    await f.commit(sept(1));
+    const wt = await f.worktree("wt-auth", { branch: "add-auth" });
+    await mkdir(join(f.root, "openspec/changes/archive"));
+    await f.git("mv", "openspec/changes/add-auth", "openspec/changes/archive/2026-09-02-add-auth");
+    await f.commit(sept(2));
+    await wt.write("openspec/changes/add-auth/tasks.md", TASKS(5, 10), sept(5));
+    const app = await show(f.root);
+    await press(app, "a");
+    expect(plainLines(app.lastFrame())).toEqual([`add-auth  P S D T  ${"█".repeat(10)}${"░".repeat(10)}  1/2  main  +1  archived`]);
+    await press(app, ENTER);
+    expect(plainLines(app.lastFrame())).toEqual([
+      `add-auth  P S D T  ${"█".repeat(10)}${"░".repeat(10)}  1/2   main  archived`,
+      `add-auth  P S D T  ${"█".repeat(10)}${"░".repeat(10)}  5/10  wt:wt-auth`,
+    ]);
+  });
+});
+
+describe("Ready to archive marker", () => {
+  test("every task ticked: the row ends with a green ready marker", async () => {
+    const f = await fixture();
+    await f.write("openspec/changes/add-auth/tasks.md", TASKS(7, 7));
+    const { lastFrame } = await show(f.root);
+    expect(plainLines(lastFrame())).toEqual([`add-auth  P S D T  ${"█".repeat(20)}  7/7  main  ✓ ready to archive`]);
+    expect(styledLine(lastFrame(), "add-auth")).toContain(GREEN("✓ ready to archive"));
+  });
+
+  test("tasks remaining: no marker", async () => {
+    const f = await fixture();
+    await f.write("openspec/changes/add-auth/tasks.md", TASKS(6, 7));
+    const { lastFrame } = await show(f.root);
+    expect(plainLines(lastFrame())).toEqual([`add-auth  P S D T  ${"█".repeat(17)}${"░".repeat(3)}  6/7  main`]);
+  });
+
+  test("no tasks: no marker", async () => {
+    const f = await fixture();
+    await f.write("openspec/changes/idea/tasks.md", "## nothing yet\n");
+    const { lastFrame } = await show(f.root);
+    expect(plainLines(lastFrame())).toEqual([`idea  P S D T  ${"░".repeat(20)}  0/0  main`]);
+  });
+
+  test("already archived with every task ticked: archived marker only", async () => {
+    const f = await fixture();
+    await f.write("openspec/changes/archive/2026-08-01-add-auth/tasks.md", TASKS(7, 7));
+    const app = await show(f.root);
+    await press(app, "a");
+    expect(plainLines(app.lastFrame())).toEqual([`add-auth  P S D T  ${"█".repeat(20)}  7/7  main  archived`]);
+  });
+
+  test("ready on an older version only: no marker on the Headline or the older version's row", async () => {
+    const f = await fixture();
+    await f.write("openspec/changes/add-auth/tasks.md", TASKS(7, 7));
+    await f.commit(sept(1));
+    const wt = await f.worktree("wt-auth", { branch: "add-auth" });
+    await wt.write("openspec/changes/add-auth/tasks.md", TASKS(7, 8), sept(5));
+    const app = await show(f.root);
+    expect(plainLines(app.lastFrame())).toEqual([`add-auth  P S D T  ${"█".repeat(17)}${"░".repeat(3)}  7/8  wt:wt-auth  +1`]);
+    await press(app, ENTER);
+    expect(plainLines(app.lastFrame())).toEqual([
+      `add-auth  P S D T  ${"█".repeat(17)}${"░".repeat(3)}  7/8  wt:wt-auth`,
+      `add-auth  P S D T  ${"█".repeat(20)}  7/7  main`,
+    ]);
+  });
+
+  test("expanded: only the Headline version's row carries the ready marker", async () => {
+    const f = await fixture();
+    await f.write("openspec/changes/add-auth/tasks.md", TASKS(3, 8));
+    await f.commit(sept(1));
+    const wt = await f.worktree("wt-auth", { branch: "add-auth" });
+    await wt.write("openspec/changes/add-auth/tasks.md", TASKS(8, 8), sept(5));
+    const app = await show(f.root);
+    await press(app, ENTER);
+    expect(plainLines(app.lastFrame())).toEqual([
+      `add-auth  P S D T  ${"█".repeat(20)}  8/8  wt:wt-auth  ✓ ready to archive`,
+      `add-auth  P S D T  ${"█".repeat(7)}${"░".repeat(13)}  3/8  main`,
+    ]);
   });
 });
 
@@ -199,7 +340,7 @@ describe("Error rows", () => {
     const { lastFrame } = await show(f.root);
     const lines = plainLines(lastFrame());
     expect(lines[0]).toStartWith("broken  main  ✗ EACCES: permission denied");
-    expect(lines.at(-1)).toBe(`fine    P S D T  ${"█".repeat(20)}  1/1  main`);
+    expect(lines.at(-1)).toBe(`fine    P S D T  ${"█".repeat(20)}  1/1  main  ✓ ready to archive`);
   });
 
   test.skipIf(process.getuid?.() === 0)("an unreadable version in another worktree is an error row with its label", async () => {
@@ -210,10 +351,10 @@ describe("Error rows", () => {
     await wt.write("openspec/changes/a/tasks.md", "- [x] a\n- [ ] b\n", sept(5));
     await chmod(join(wt.root, "openspec/changes/a/tasks.md"), 0o000);
     const app = await show(f.root);
-    expect(plainLines(app.lastFrame())).toEqual([`a  P S D T  ${"█".repeat(20)}  1/1  main  +1`]);
+    expect(plainLines(app.lastFrame())).toEqual([`a  P S D T  ${"█".repeat(20)}  1/1  main  +1  ✓ ready to archive`]);
     await press(app, ENTER);
     const lines = plainLines(app.lastFrame());
-    expect(lines[0]).toBe(`a  P S D T  ${"█".repeat(20)}  1/1  main`);
+    expect(lines[0]).toBe(`a  P S D T  ${"█".repeat(20)}  1/1  main  ✓ ready to archive`);
     expect(lines[1]).toStartWith("a  wt:wt-a  ✗ EACCES: permission denied");
   });
 });
@@ -243,7 +384,7 @@ describe("Sources in rows", () => {
     await f.git("checkout", "-q", "main");
     const { lastFrame } = await show(f.root);
     expect(plainLines(lastFrame())).toEqual([
-      `a  P S D T  ${"█".repeat(20)}  1/1  feat  +1`,
+      `a  P S D T  ${"█".repeat(20)}  1/1  feat  +1  ✓ ready to archive`,
       `b  P S D T  ${"░".repeat(20)}  0/1  main`,
     ]);
   });

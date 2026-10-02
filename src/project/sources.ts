@@ -1,11 +1,12 @@
 import { basename, dirname, join } from "node:path";
 import { git } from "./git.ts";
-import { changeIdReader, statusPaths } from "./history.ts";
+import { changeDirReader, statusPaths } from "./history.ts";
 import { exists } from "./fs.ts";
 
 /**
- * Where one Source's Change versions are read from. `changed` holds the change ids the Source may
- * contribute; it is absent for the Base, which contributes every Change it holds.
+ * Where one Source's Change versions are read from. `changed` holds the change directories (relative
+ * to `openspec/changes/`) the Source may contribute; it is absent for the Base, which contributes
+ * every Change version it holds.
  */
 export type Source =
   | { read: "worktree"; label: string; dir: string; changed?: Set<string> }
@@ -83,9 +84,9 @@ export async function findSources(path: string, base?: string): Promise<Sources>
     .filter(([, counts]) => Number(counts!.split(" ")[0]) > 0)
     .map(([ref]) => ref!);
 
-  const changeIdOf = changeIdReader(prefix);
+  const changeDirOf = changeDirReader(prefix);
   const pathspec = `:(top,literal)${prefix}openspec`;
-  const changedIds = (paths: string[]) => new Set(paths.flatMap((p) => changeIdOf(p) ?? []));
+  const changedDirs = (paths: string[]) => new Set(paths.flatMap((p) => changeDirOf(p)?.dir ?? []));
 
   const worktreeSources = worktrees
     .filter((w) => w !== baseTree)
@@ -98,13 +99,13 @@ export async function findSources(path: string, base?: string): Promise<Sources>
       if (!uncommitted.ok) return { kind: "error", message: uncommitted.message };
       const paths = [...committed.paths, ...statusPaths(uncommitted.stdout)];
       if (paths.length === 0) return undefined;
-      return { read: "worktree", label: `wt:${basename(w.path)}`, dir: projectDir(w), changed: changedIds(paths) };
+      return { read: "worktree", label: `wt:${basename(w.path)}`, dir: projectDir(w), changed: changedDirs(paths) };
     });
   const branchSources = branchCandidates.map(async (ref): Promise<Found> => {
     const committed = await diffSinceSplit(path, baseRef.rev, ref, pathspec);
     if (!committed.ok) return { kind: "error", message: committed.message };
     if (committed.paths.length === 0) return undefined;
-    return { read: "commit", label: shortBranch(ref), rev: ref, changed: changedIds(committed.paths) };
+    return { read: "commit", label: shortBranch(ref), rev: ref, changed: changedDirs(committed.paths) };
   });
 
   const sources: Source[] = [baseSource];

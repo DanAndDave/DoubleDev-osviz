@@ -1,17 +1,36 @@
+import type { ChangeDir } from "./change.ts";
+
 /**
  * Parsers for git output shared by the Source readers and Source discovery. git prints paths
  * relative to the repository root; `prefix` is the Project's directory relative to that root
  * (`git rev-parse --show-prefix`, so `""` or ending in `/`).
  */
 
-/** Maps a repository path under `<prefix>openspec/changes/<id>/` to `<id>`; anything else to `undefined`. */
-export function changeIdReader(prefix: string): (repoPath: string) => string | undefined {
+const ARCHIVE_NAME = /^\d{4}-\d{2}-\d{2}-(.+)$/;
+
+/** The active change directory `<id>`. */
+export function activeDir(id: string): ChangeDir {
+  return { dir: id, id, archived: false };
+}
+
+/** The archived change directory `archive/<name>`, or `undefined` when `name` is not `<YYYY-MM-DD>-<id>`. */
+export function archivedDir(name: string): ChangeDir | undefined {
+  const id = ARCHIVE_NAME.exec(name)?.[1];
+  return id === undefined ? undefined : { dir: `archive/${name}`, id, archived: true };
+}
+
+/**
+ * Maps a repository path below a change directory of the Project (`openspec/changes/<id>/…` or
+ * `openspec/changes/archive/<YYYY-MM-DD>-<id>/…`) to that directory; anything else to `undefined`.
+ */
+export function changeDirReader(prefix: string): (repoPath: string) => ChangeDir | undefined {
   const changesPrefix = `${prefix}openspec/changes/`;
   return (repoPath) => {
     if (!repoPath.startsWith(changesPrefix)) return undefined;
-    const rest = repoPath.slice(changesPrefix.length);
-    const slash = rest.indexOf("/");
-    return slash > 0 ? rest.slice(0, slash) : undefined;
+    const [first = "", ...rest] = repoPath.slice(changesPrefix.length).split("/");
+    if (first === "" || rest.length === 0) return undefined;
+    if (first !== "archive") return activeDir(first);
+    return rest.length > 1 ? archivedDir(rest[0]!) : undefined;
   };
 }
 
@@ -36,8 +55,8 @@ export function logArgs(rev?: string): string[] {
   ];
 }
 
-/** The committer time of the latest commit touching each change, from the output of `logArgs`. */
-export function parseLog(stdout: string, changeIdOf: (repoPath: string) => string | undefined): Map<string, Date> {
+/** The committer time of the latest commit touching each change directory, from the output of `logArgs`. */
+export function parseLog(stdout: string, changeDirOf: (repoPath: string) => ChangeDir | undefined): Map<string, Date> {
   // Each commit is a `\x01<seconds>` token followed by its paths, each path token starting with `\n` or not.
   const committed = new Map<string, Date>();
   let commitTime = new Date(0);
@@ -47,10 +66,10 @@ export function parseLog(stdout: string, changeIdOf: (repoPath: string) => strin
       commitTime = new Date(Number(token.slice(1)) * 1000);
       continue;
     }
-    const id = changeIdOf(token);
-    if (id === undefined) continue;
-    const seen = committed.get(id);
-    if (seen === undefined || seen < commitTime) committed.set(id, commitTime);
+    const dir = changeDirOf(token)?.dir;
+    if (dir === undefined) continue;
+    const seen = committed.get(dir);
+    if (seen === undefined || seen < commitTime) committed.set(dir, commitTime);
   }
   return committed;
 }

@@ -45,5 +45,5 @@ The count of checked task checkboxes over all task checkboxes in a Change versio
 _Avoid_: completion, percent done
 
 **Ready to archive**:
-A Change whose Headline version is not archived and has every task checkbox ticked.
+A Change whose Headline version is not archived and has at least one task checkbox, all ticked. A Change with no task checkboxes is not Ready to archive, as `openspec list` reports it as "No tasks".
 _Avoid_: done, complete

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { rm } from "node:fs/promises";
+import { mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { readProject, type ChangeSummary, type ProjectSnapshot } from "../src/project/read.ts";
 import { type Fixture, sept, useFixtures } from "./fixture.ts";
@@ -9,13 +9,16 @@ const fixture = useFixtures();
 const TODO = "- [ ] a\n- [ ] b\n";
 const ONE_DONE = "- [x] a\n- [ ] b\n";
 
-/** Per Change id, its versions as `<source> <done>/<total>`, Headline first; fails on a Project error. */
+/** Per Change id, its versions as `<source> <done>/<total>[ archived]`, Headline first; fails on a Project error. */
 function versionsOf(snapshot: ProjectSnapshot): Record<string, string[]> {
   if (snapshot.kind !== "ok") throw new Error(`expected ok snapshot, got: ${snapshot.message}`);
   return Object.fromEntries(
     snapshot.changes.map(({ id, versions }) => [
       id,
-      versions.map((v) => `${v.source} ${v.kind === "change" ? `${v.tasks.done}/${v.tasks.total}` : `✗ ${v.message}`}`),
+      versions.map(
+        (v) =>
+          `${v.source} ${v.kind === "change" ? `${v.tasks.done}/${v.tasks.total}` : `✗ ${v.message}`}${v.archived ? " archived" : ""}`,
+      ),
     ]),
   );
 }
@@ -230,6 +233,29 @@ describe("Change versions per Source", () => {
     await f.commit(sept(2));
     await f.git("checkout", "-q", "main");
     expect(versionsOf(await readProject(f.root))).toEqual({ other: ["drop 0/0"], "add-auth": ["main 0/2"] });
+  });
+
+  test("archived on a branch: the Base's active version and the branch's archived one", async () => {
+    const f = await baseRepo();
+    await f.git("checkout", "-q", "-b", "wrap-up");
+    // `openspec archive` moves the change directory into `archive/`, creating it when needed.
+    await mkdir(join(f.root, "openspec/changes/archive"), { recursive: true });
+    await f.git("mv", "openspec/changes/add-auth", "openspec/changes/archive/2026-09-10-add-auth");
+    await f.commit(sept(10));
+    await f.git("checkout", "-q", "main");
+    expect(versionsOf(await readProject(f.root))).toEqual({ "add-auth": ["wrap-up 0/2 archived", "main 0/2"] });
+  });
+
+  test("an archive inherited from the Base is not repeated by a worktree that did not change it", async () => {
+    const f = await baseRepo();
+    await f.write("openspec/changes/archive/2026-08-01-old/tasks.md", ONE_DONE);
+    await f.commit(sept(2));
+    const wt = await f.worktree("wt-auth", { branch: "add-auth" });
+    await wt.write("openspec/changes/add-auth/tasks.md", ONE_DONE, sept(3));
+    expect(versionsOf(await readProject(f.root))).toEqual({
+      "add-auth": ["wt:wt-auth 1/2", "main 0/2"],
+      old: ["main 1/2 archived"],
+    });
   });
 });
 

@@ -1,14 +1,13 @@
-import type { Dirent } from "node:fs";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
-import { type ChangeVersion, changeSummary, type SourceRead } from "./change.ts";
+import { type ChangeDir, type ChangeVersion, changeSummary, type SourceRead } from "./change.ts";
 import { exists } from "./fs.ts";
 import { git } from "./git.ts";
-import { changeIdReader, logArgs, parseLog, statusPaths } from "./history.ts";
+import { activeDir, archivedDir, changeDirReader, logArgs, parseLog, statusPaths } from "./history.ts";
 
 /**
- * What git knows about one worktree's changes: which have uncommitted edits, and the committer time
- * of the latest commit touching each. `none` when the Project is not inside a git repository.
+ * What git knows about one worktree's change directories: which have uncommitted edits, and the
+ * committer time of the latest commit touching each. `none` when the Project is not inside a git repository.
  */
 type History = { kind: "none" } | { kind: "git"; uncommitted: Set<string>; committed: Map<string, Date> };
 
@@ -22,31 +21,40 @@ export async function readWorktreeSource(
   prefix: string | undefined,
 ): Promise<SourceRead> {
   const changesDir = join(dir, "openspec", "changes");
-  let entries: Dirent[];
-  try {
-    entries = await readdir(changesDir, { withFileTypes: true });
-  } catch (error) {
-    const { code, message } = error as NodeJS.ErrnoException;
-    if (code !== "ENOENT") return { kind: "error", message: `cannot read openspec/changes: ${message}` };
-    entries = [];
-  }
-  const ids = entries.filter((e) => e.isDirectory() && e.name !== "archive").map((e) => e.name);
+  const [active, archive] = await Promise.all([listDirectories(changesDir), listDirectories(join(changesDir, "archive"))]);
+  if (active.kind === "error") return { kind: "error", message: `cannot read openspec/changes: ${active.message}` };
+  if (archive.kind === "error") return { kind: "error", message: `cannot read openspec/changes/archive: ${archive.message}` };
+  const dirs = [
+    ...active.names.filter((name) => name !== "archive").map(activeDir),
+    ...archive.names.flatMap((name) => archivedDir(name) ?? []),
+  ];
   // Nothing to date; also skips git when the Project folder is missing from this worktree's checkout.
-  if (ids.length === 0) return { kind: "ok", versions: [] };
+  if (dirs.length === 0) return { kind: "ok", versions: [] };
   const history = prefix === undefined ? ({ kind: "none" } as const) : await readHistory(dir, prefix);
   if (history.kind === "error") return history;
   const versions = await Promise.all(
-    ids.map((id) =>
-      readChange(join(changesDir, id), id, label, history).catch(
-        (error: Error): ChangeVersion => ({ kind: "error", id, source: label, message: error.message }),
+    dirs.map((changeDir) =>
+      readChange(join(changesDir, changeDir.dir), changeDir, label, history).catch(
+        (error: Error): ChangeVersion => ({ kind: "error", ...changeDir, source: label, message: error.message }),
       ),
     ),
   );
   return { kind: "ok", versions };
 }
 
+/** Names of the directories directly in `dir`; none when `dir` does not exist. */
+async function listDirectories(dir: string): Promise<{ kind: "ok"; names: string[] } | { kind: "error"; message: string }> {
+  try {
+    const entries = await readdir(dir, { withFileTypes: true });
+    return { kind: "ok", names: entries.filter((e) => e.isDirectory()).map((e) => e.name) };
+  } catch (error) {
+    const { code, message } = error as NodeJS.ErrnoException;
+    return code === "ENOENT" ? { kind: "ok", names: [] } : { kind: "error", message };
+  }
+}
+
 async function readHistory(dir: string, prefix: string): Promise<History | { kind: "error"; message: string }> {
-  const changeIdOf = changeIdReader(prefix);
+  const changeDirOf = changeDirReader(prefix);
   const [status, log] = await Promise.all([
     git(dir, ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--", "openspec/changes"]),
     git(dir, logArgs()),
@@ -58,22 +66,23 @@ async function readHistory(dir: string, prefix: string): Promise<History | { kin
 
   const uncommitted = new Set<string>();
   for (const path of statusPaths(status.stdout)) {
-    const id = changeIdOf(path);
-    if (id !== undefined) uncommitted.add(id);
+    const changeDir = changeDirOf(path);
+    if (changeDir !== undefined) uncommitted.add(changeDir.dir);
   }
-  return { kind: "git", uncommitted, committed: parseLog(log.ok ? log.stdout : "", changeIdOf) };
+  return { kind: "git", uncommitted, committed: parseLog(log.ok ? log.stdout : "", changeDirOf) };
 }
 
-async function readChange(dir: string, id: string, source: string | undefined, history: History): Promise<ChangeVersion> {
-  const commitTime = history.kind === "git" && !history.uncommitted.has(id) ? history.committed.get(id) : undefined;
+async function readChange(path: string, changeDir: ChangeDir, source: string | undefined, history: History): Promise<ChangeVersion> {
+  const commitTime =
+    history.kind === "git" && !history.uncommitted.has(changeDir.dir) ? history.committed.get(changeDir.dir) : undefined;
   const [proposal, specs, design, tasksContent, changeTime] = await Promise.all([
-    exists(join(dir, "proposal.md")),
-    hasMarkdown(join(dir, "specs")),
-    exists(join(dir, "design.md")),
-    readOptional(join(dir, "tasks.md")),
-    commitTime ?? newestMtime(dir),
+    exists(join(path, "proposal.md")),
+    hasMarkdown(join(path, "specs")),
+    exists(join(path, "design.md")),
+    readOptional(join(path, "tasks.md")),
+    commitTime ?? newestMtime(path),
   ]);
-  return changeSummary(id, source, { proposal, specs, design }, tasksContent, changeTime);
+  return changeSummary(changeDir, source, { proposal, specs, design }, tasksContent, changeTime);
 }
 
 async function hasMarkdown(dir: string): Promise<boolean> {
