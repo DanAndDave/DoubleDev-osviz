@@ -9,5 +9,5 @@ if ("error" in args) {
   console.error(`osviz: ${args.error}\n${USAGE}`);
   process.exit(2);
 }
-const snapshot = await readProject(args.path, { base: args.base });
-await render(<App snapshot={snapshot} />).waitUntilExit();
+const read = () => readProject(args.path, { base: args.base });
+await render(<App initial={await read()} read={read} />).waitUntilExit();

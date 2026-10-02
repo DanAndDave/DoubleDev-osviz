@@ -1,10 +1,10 @@
-import { describe, expect, test } from "bun:test";
-import { chmod, mkdir } from "node:fs/promises";
+import { afterEach, beforeEach, describe, expect, jest, test } from "bun:test";
+import { chmod, mkdir, rename, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
-import { render } from "ink-testing-library";
+import { cleanup, render } from "ink-testing-library";
 import { useEffect } from "react";
-import { readProject } from "../src/project/read.ts";
+import { type ProjectSnapshot, readProject } from "../src/project/read.ts";
 import { App } from "../src/ui/App.tsx";
 import { sept, useFixtures } from "./fixture.ts";
 
@@ -14,17 +14,48 @@ const BOLD = (s: string) => `\u001B[1m${s}\u001B[22m`;
 const DIM = (s: string) => `\u001B[2m${s}\u001B[22m`;
 const GREEN = (s: string) => `\u001B[32m${s}\u001B[39m`;
 
+/** Lets Ink finish its next frame; under fake timers, by advancing them 20ms. */
 async function settle(): Promise<void> {
+  if (jest.isFakeTimers()) return advance(20);
   const { promise, resolve } = Promise.withResolvers<void>();
   setTimeout(resolve, 20);
   await promise;
 }
 
-/** Renders the dashboard for the Project at `path` and lets Ink finish its first frame. */
+/** Advances fake timers by `ms`, then lets pending callbacks run. */
+async function advance(ms: number): Promise<void> {
+  jest.advanceTimersByTime(ms);
+  await new Promise((resolve) => setImmediate(resolve));
+}
+
+// Every dashboard is unmounted after its test, which stops its refresh interval.
+afterEach(cleanup);
+afterEach(() => void jest.useRealTimers());
+
+/**
+ * Renders the dashboard for the Project at `path` and lets Ink finish its first frame. Every read the
+ * dashboard starts is recorded in `reads`; `refreshed()` waits for them and the frame that follows.
+ */
 async function show(path: string) {
-  const app = render(<App snapshot={await readProject(path)} />);
+  const reads: Promise<ProjectSnapshot>[] = [];
+  const read = () => {
+    const reading = readProject(path);
+    reads.push(reading);
+    return reading;
+  };
+  const app = render(<App initial={await readProject(path)} read={read} />);
   await settle();
-  return app;
+  const refreshed = async () => {
+    await Promise.all(reads);
+    await settle();
+  };
+  return { ...app, reads, refreshed };
+}
+
+/** Presses `r` and waits for the read and the frame after it. */
+async function refresh(app: Awaited<ReturnType<typeof show>>): Promise<void> {
+  await press(app, "r");
+  await app.refreshed();
 }
 
 /** The frame's lines with styling removed. */
@@ -454,7 +485,7 @@ describe("Quit", () => {
     }
     const app = render(
       <>
-        <App snapshot={await readProject(f.root)} />
+        <App initial={await readProject(f.root)} read={() => readProject(f.root)} />
         <Sentinel />
       </>,
     );
@@ -465,5 +496,199 @@ describe("Quit", () => {
     app.stdin.write("q");
     await settle();
     expect(mounted).toBe(false);
+  });
+});
+
+describe("Refresh on demand", () => {
+  test("r re-reads the Project: a ticked task shows at once", async () => {
+    const f = await fixture();
+    await f.write("openspec/changes/add-auth/tasks.md", TASKS(3, 10));
+    const app = await show(f.root);
+    await f.write("openspec/changes/add-auth/tasks.md", TASKS(4, 10));
+    await refresh(app);
+    expect(plainLines(app.lastFrame())).toEqual([`add-auth  P S D T  ${"█".repeat(8)}${"░".repeat(12)}  4/10  main`]);
+  });
+});
+
+describe("Problems during a refresh", () => {
+  test("openspec/ moved away shows the error row; moved back, the Change rows return", async () => {
+    const f = await fixture();
+    await f.write("openspec/changes/add-auth/tasks.md", TASKS(3, 10));
+    const app = await show(f.root);
+    await rename(join(f.root, "openspec"), join(f.root, "moved"));
+    await refresh(app);
+    expect(plainLines(app.lastFrame())).toEqual([`✗ no openspec/ folder found at ${f.root}`]);
+    await rename(join(f.root, "moved"), join(f.root, "openspec"));
+    await refresh(app);
+    expect(plainLines(app.lastFrame())).toEqual([`add-auth  P S D T  ${"█".repeat(6)}${"░".repeat(14)}  3/10  main`]);
+  });
+});
+
+describe("Periodic refresh", () => {
+  beforeEach(() => void jest.useFakeTimers());
+
+  test("a ticked task shows within 5 seconds without a key", async () => {
+    const f = await fixture();
+    await f.write("openspec/changes/add-auth/tasks.md", TASKS(3, 10));
+    const app = await show(f.root);
+    await f.write("openspec/changes/add-auth/tasks.md", TASKS(4, 10));
+    await advance(5000);
+    await app.refreshed();
+    expect(plainLines(app.lastFrame())).toEqual([`add-auth  P S D T  ${"█".repeat(8)}${"░".repeat(12)}  4/10  main`]);
+  });
+
+  test("a new Change appears within 5 seconds, in its place by Change time", async () => {
+    const f = await fixture();
+    await f.write("openspec/changes/old/proposal.md", "", sept(1));
+    await f.write("openspec/changes/newer/proposal.md", "", sept(3));
+    const app = await show(f.root);
+    await f.write("openspec/changes/fix-login/proposal.md", "", sept(2));
+    await advance(5000);
+    await app.refreshed();
+    expect(plainLines(app.lastFrame()).map((line) => line.split(" ")[0])).toEqual(["newer", "fix-login", "old"]);
+  });
+
+  test("nothing changes before the interval", async () => {
+    const f = await fixture();
+    await f.write("openspec/changes/add-auth/tasks.md", TASKS(3, 10));
+    const app = await show(f.root);
+    await f.write("openspec/changes/add-auth/tasks.md", TASKS(4, 10));
+    await advance(4900);
+    await app.refreshed();
+    expect(app.reads).toHaveLength(0);
+    expect(plainLines(app.lastFrame())).toEqual([`add-auth  P S D T  ${"█".repeat(6)}${"░".repeat(14)}  3/10  main`]);
+  });
+
+  test("no read starts after the dashboard exits", async () => {
+    const f = await fixture();
+    await f.write("openspec/changes/add-auth/proposal.md");
+    const app = await show(f.root);
+    app.unmount();
+    await advance(5000);
+    expect(app.reads).toHaveLength(0);
+  });
+});
+
+describe("No overlapping reads", () => {
+  beforeEach(() => void jest.useFakeTimers());
+
+  test("a tick and r during a slow read start no second read; the first tick or r after it does", async () => {
+    const f = await fixture();
+    await f.write("openspec/changes/add-auth/proposal.md");
+    const pending: ((snapshot: ProjectSnapshot) => void)[] = [];
+    const read = () => {
+      const { promise, resolve } = Promise.withResolvers<ProjectSnapshot>();
+      pending.push(resolve);
+      return promise;
+    };
+    const app = render(<App initial={await readProject(f.root)} read={read} />);
+    await press(app, "r");
+    await advance(5000);
+    await press(app, "r");
+    expect(pending).toHaveLength(1);
+    pending[0]!(await readProject(f.root));
+    await settle();
+    await advance(5000);
+    expect(pending).toHaveLength(2);
+    pending[1]!(await readProject(f.root));
+    await settle();
+    await press(app, "r");
+    expect(pending).toHaveLength(3);
+  });
+});
+
+describe("Place kept across a refresh", () => {
+  test("the selected Change stays selected when a ticked task moves it to the top", async () => {
+    const f = await fixture();
+    await f.write("openspec/changes/alpha/tasks.md", TASKS(0, 2), sept(5));
+    await f.write("openspec/changes/bravo/tasks.md", TASKS(0, 2), sept(1));
+    const app = await show(f.root);
+    await press(app, "j");
+    await f.write("openspec/changes/bravo/tasks.md", TASKS(1, 2), sept(9));
+    await refresh(app);
+    expect(plainLines(app.lastFrame()).map((line) => line.split(" ")[0])).toEqual(["bravo", "alpha"]);
+    expect(selected(app.lastFrame())).toEqual(["bravo"]);
+  });
+
+  test("an expanded Change stays expanded and its selected version row stays selected when the versions reorder", async () => {
+    const f = await fixture();
+    await f.write("openspec/changes/add-auth/tasks.md", TASKS(1, 4));
+    await f.commit(sept(1));
+    const wt = await f.worktree("wt-auth", { branch: "add-auth" });
+    await wt.write("openspec/changes/add-auth/tasks.md", TASKS(2, 4), sept(3));
+    await f.write("openspec/changes/add-auth/tasks.md", TASKS(1, 5));
+    await f.commit(sept(4));
+    const app = await show(f.root);
+    await press(app, ENTER);
+    expect(selectedLines(app.lastFrame())).toEqual([`add-auth  P S D T  ${"█".repeat(4)}${"░".repeat(16)}  1/5  main`]);
+    await wt.write("openspec/changes/add-auth/tasks.md", TASKS(3, 4), sept(6));
+    await refresh(app);
+    expect(plainLines(app.lastFrame())).toEqual([
+      `add-auth  P S D T  ${"█".repeat(15)}${"░".repeat(5)}  3/4  wt:wt-auth`,
+      `add-auth  P S D T  ${"█".repeat(4)}${"░".repeat(16)}  1/5  main`,
+    ]);
+    expect(selectedLines(app.lastFrame())).toEqual([`add-auth  P S D T  ${"█".repeat(4)}${"░".repeat(16)}  1/5  main`]);
+  });
+
+  test("when the selected version is gone, its Change's first row is selected", async () => {
+    const f = await fixture();
+    await f.write("openspec/changes/add-auth/tasks.md", TASKS(1, 4));
+    await f.write("openspec/changes/zeta/proposal.md");
+    await f.commit(sept(1));
+    const wt = await f.worktree("wt-auth", { branch: "add-auth" });
+    await wt.write("openspec/changes/add-auth/tasks.md", TASKS(2, 4), sept(3));
+    await f.write("openspec/changes/add-auth/tasks.md", TASKS(1, 5));
+    await f.commit(sept(4));
+    const app = await show(f.root);
+    await press(app, ENTER, "j");
+    expect(selectedLines(app.lastFrame())).toEqual([`add-auth  P S D T  ${"█".repeat(10)}${"░".repeat(10)}  2/4  wt:wt-auth`]);
+    await f.git("worktree", "remove", "--force", wt.root);
+    await refresh(app);
+    expect(plainLines(app.lastFrame()).map((line) => line.split(" ")[0])).toEqual(["add-auth", "zeta"]);
+    expect(selected(app.lastFrame())).toEqual(["add-auth"]);
+  });
+
+  /** `alpha`, `bravo` and `charlie` on `main`, in that order. */
+  async function threeChanges() {
+    const f = await fixture();
+    for (const id of ["alpha", "bravo", "charlie"]) await f.write(`openspec/changes/${id}/proposal.md`);
+    await f.commit(sept(1));
+    return { f, app: await show(f.root) };
+  }
+
+  test("when the selected Change is gone, the Change now in its position is selected", async () => {
+    const { f, app } = await threeChanges();
+    await press(app, "j");
+    await rm(join(f.root, "openspec/changes/bravo"), { recursive: true });
+    await refresh(app);
+    expect(plainLines(app.lastFrame()).map((line) => line.split(" ")[0])).toEqual(["alpha", "charlie"]);
+    expect(selected(app.lastFrame())).toEqual(["charlie"]);
+  });
+
+  test("when the selected last Change is gone, the new last row is selected", async () => {
+    const { f, app } = await threeChanges();
+    await press(app, "j", "j");
+    await rm(join(f.root, "openspec/changes/charlie"), { recursive: true });
+    await refresh(app);
+    expect(selected(app.lastFrame())).toEqual(["bravo"]);
+  });
+
+  test("when the selected Change is archived on the Base and archived Changes are hidden, the row at its position is selected", async () => {
+    const f = await fixture();
+    await f.write("openspec/changes/older/proposal.md");
+    await f.commit(sept(1));
+    await f.write("openspec/changes/add-auth/proposal.md");
+    await f.commit(sept(3));
+    await f.write("openspec/changes/newer/proposal.md");
+    await f.commit(sept(5));
+    const app = await show(f.root);
+    await press(app, "j");
+    expect(selected(app.lastFrame())).toEqual(["add-auth"]);
+    await mkdir(join(f.root, "openspec/changes/archive"));
+    await f.git("mv", "openspec/changes/add-auth", "openspec/changes/archive/2026-09-06-add-auth");
+    await f.commit(sept(6));
+    await refresh(app);
+    expect(plainLines(app.lastFrame()).map((line) => line.split(" ")[0])).toEqual(["newer", "older"]);
+    expect(selected(app.lastFrame())).toEqual(["older"]);
   });
 });
