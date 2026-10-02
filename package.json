@@ -1,0 +1,24 @@
+{
+  "name": "osviz",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "osviz": "./src/cli.tsx"
+  },
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "ink": "^7.1.1",
+    "react": "^19.2"
+  },
+  "devDependencies": {
+    "@fission-ai/openspec": "1.13.0",
+    "@types/bun": "1.4.2",
+    "@types/react": "19.3.0",
+    "ink-testing-library": "^4",
+    "typescript": "7.0.2"
+  }
+}
