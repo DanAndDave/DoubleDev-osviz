@@ -42,18 +42,23 @@ interface Size {
 const ROOMY: Size = { columns: 200, rows: 50 };
 
 /**
- * Renders the dashboard for the Project at `path` in a terminal of `size` and lets Ink finish its
- * frame. Every read the dashboard starts is recorded in `reads`; `refreshed()` waits for them and the
- * frame that follows.
+ * Renders the dashboard for the Projects at `paths`, each labelled with its path and read with `base`
+ * as `--base`, in a terminal of `size` and lets Ink finish its frame. Every read the dashboard starts
+ * is recorded in `reads`; `refreshed()` waits for them and the frame that follows.
  */
-async function show(path: string, size: Size = ROOMY) {
+async function show(paths: string | string[], size: Size = ROOMY, { base }: { base?: string } = {}) {
   const reads: Promise<ProjectSnapshot>[] = [];
-  const read = () => {
-    const reading = readProject(path);
-    reads.push(reading);
-    return reading;
-  };
-  const app = render(<App initial={await readProject(path)} read={read} />);
+  const projects = await Promise.all(
+    [paths].flat().map(async (path) => {
+      const read = () => {
+        const reading = readProject(path, { base });
+        reads.push(reading);
+        return reading;
+      };
+      return { label: path, initial: await readProject(path, { base }), read };
+    }),
+  );
+  const app = render(<App projects={projects} />);
   await settle();
   await resize(app, size);
   const refreshed = async () => {
@@ -62,6 +67,14 @@ async function show(path: string, size: Size = ROOMY) {
   };
   return { ...app, reads, refreshed };
 }
+
+/** `text` as one line of `width` columns: cut and ending in `…` when longer. */
+function cut(text: string, width: number): string {
+  return text.length <= width ? text : `${text.slice(0, width - 1)}…`;
+}
+
+/** The list's narrowest width. */
+const LIST_MIN_WIDTH = 40;
 
 /** Gives the test terminal `size`, as a terminal window resize does, and lets Ink redraw. */
 async function resize(app: { stdout: NodeJS.EventEmitter }, { columns, rows }: Size): Promise<void> {
@@ -135,6 +148,16 @@ function selected(frame: string | undefined): string[] {
   return selectedLines(frame).map((line) => line.split(" ")[0]!);
 }
 
+/** Ids of the list's rows; headers keep their full text. */
+function ids(frame: string | undefined): string[] {
+  return listLines(frame).map((line) => line.split(" ")[0]!);
+}
+
+/** The `done/total` progress of each Change row in the list. */
+function progress(frame: string | undefined): string[] {
+  return listLines(frame).flatMap((line) => /\d+\/\d+/.exec(line) ?? []);
+}
+
 async function press(app: { stdin: { write(data: string): void } }, ...keys: string[]): Promise<void> {
   for (const key of keys) {
     app.stdin.write(key);
@@ -179,6 +202,89 @@ describe("Change rows", () => {
     await f.write("openspec/changes/idea/proposal.md");
     const { lastFrame } = await show(f.root);
     expect(listLines(lastFrame())).toEqual([`idea  P S D T  ${"░".repeat(20)}  0/0`]);
+  });
+});
+
+/** A git fixture with one Change `id` on `main`, committed at `date`. */
+async function oneChange(id: string, date = sept(1)) {
+  const f = await fixture();
+  await f.write(`openspec/changes/${id}/proposal.md`);
+  await f.commit(date);
+  return f;
+}
+
+/** A git fixture whose only Change is archived, so it has no active Changes. */
+async function noActiveChanges() {
+  const f = await fixture();
+  await f.write("openspec/changes/archive/2026-08-01-old/proposal.md");
+  return f;
+}
+
+describe("Project header rows", () => {
+  test("two Projects: each header in bold, then its rows, in command-line order", async () => {
+    const web = await oneChange("login");
+    const api = await oneChange("rate-limit");
+    const { lastFrame } = await show([web.root, api.root]);
+    expect(listLines(lastFrame())).toEqual([
+      web.root,
+      `login       P S D T  ${"░".repeat(20)}  0/0  main`,
+      api.root,
+      `rate-limit  P S D T  ${"░".repeat(20)}  0/0  main`,
+    ]);
+    expect(styledLine(lastFrame(), web.root)).toContain(BOLD(web.root));
+  });
+
+  test("Projects are not interleaved by Change time", async () => {
+    const web = await oneChange("older", sept(1));
+    const api = await oneChange("newer", sept(5));
+    const { lastFrame } = await show([web.root, api.root]);
+    expect(ids(lastFrame())).toEqual([web.root, "older", api.root, "newer"]);
+  });
+
+  test("one Project has no header", async () => {
+    const web = await oneChange("login");
+    const { lastFrame } = await show(web.root);
+    expect(listLines(lastFrame())).toEqual([`login  P S D T  ${"░".repeat(20)}  0/0  main`]);
+  });
+
+  test("a Project without active changes: its header, then No active changes", async () => {
+    const web = await oneChange("login");
+    const api = await noActiveChanges();
+    const { lastFrame } = await show([web.root, api.root]);
+    expect(listLines(lastFrame())).toEqual([web.root, `login  P S D T  ${"░".repeat(20)}  0/0  main`, api.root, "No active changes"]);
+  });
+
+  test("columns line up across Projects", async () => {
+    const web = await fixture();
+    await web.write("openspec/changes/a/tasks.md", TASKS(10, 12));
+    const api = await fixture();
+    await api.write("openspec/changes/rate-limit/tasks.md", TASKS(1, 2));
+    const { lastFrame } = await show([web.root, api.root]);
+    expect(listLines(lastFrame())).toEqual([
+      web.root,
+      `a           P S D T  ${"█".repeat(16)}${"░".repeat(4)}  10/12  main`,
+      api.root,
+      `rate-limit  P S D T  ${"█".repeat(10)}${"░".repeat(10)}  1/2    main`,
+    ]);
+  });
+
+  test("a header wider than the list is cut to it, ending in …", async () => {
+    const web = await oneChange("a");
+    const label = `${web.root}/${"x".repeat(80)}/..`;
+    const api = await oneChange("b");
+    const projects = await Promise.all(
+      [
+        { label, path: web.root },
+        { label: api.root, path: api.root },
+      ].map(async ({ label, path }) => ({ label, initial: await readProject(path), read: () => readProject(path) })),
+    );
+    const app = render(<App projects={projects} />);
+    await resize(app, ROOMY);
+    const [header, row] = listLines(app.lastFrame());
+    expect(row).toBe(`a  P S D T  ${"░".repeat(20)}  0/0  main`);
+    expect(header).toHaveLength(row!.length);
+    expect(header).toStartWith(web.root);
+    expect(header).toEndWith("x…");
   });
 });
 
@@ -227,7 +333,7 @@ describe("Archived Changes", () => {
 
   test("a shows archived Changes in Change time order with a dim archived marker; a again hides them", async () => {
     const app = await archivedBetween();
-    expect(listLines(app.lastFrame()).map((line) => line.split(" ")[0])).toEqual(["fresh", "live"]);
+    expect(ids(app.lastFrame())).toEqual(["fresh", "live"]);
     await press(app, "a");
     expect(listLines(app.lastFrame())).toEqual([
       `fresh      P S D T  ${"░".repeat(20)}  0/0  main`,
@@ -236,7 +342,7 @@ describe("Archived Changes", () => {
     ]);
     expect(styledLine(app.lastFrame(), "old-thing")).toContain(DIM("archived"));
     await press(app, "a");
-    expect(listLines(app.lastFrame()).map((line) => line.split(" ")[0])).toEqual(["fresh", "live"]);
+    expect(ids(app.lastFrame())).toEqual(["fresh", "live"]);
   });
 
   test("a keeps the selected row selected when it is still shown", async () => {
@@ -255,6 +361,34 @@ describe("Archived Changes", () => {
     expect(selected(app.lastFrame())).toEqual(["old-thing"]);
     await press(app, "a");
     expect(selected(app.lastFrame())).toEqual(["fresh"]);
+  });
+
+  test("a shows archived Changes in every Project, each under its own header", async () => {
+    const web = await fixture();
+    await web.write("openspec/changes/archive/2026-08-01-old-web/proposal.md");
+    const api = await fixture();
+    await api.write("openspec/changes/archive/2026-08-01-old-api/proposal.md");
+    const app = await show([web.root, api.root]);
+    await press(app, "a");
+    expect(listLines(app.lastFrame())).toEqual([
+      web.root,
+      `old-web  P S D T  ${"░".repeat(20)}  0/0  main  archived`,
+      api.root,
+      `old-api  P S D T  ${"░".repeat(20)}  0/0  main  archived`,
+    ]);
+  });
+
+  test("hiding a selected archived Change in a later Project selects the first selectable row", async () => {
+    const web = await oneChange("login");
+    const api = await fixture();
+    await api.write("openspec/changes/archive/2026-08-01-old-api/proposal.md");
+    await api.write("openspec/changes/rate-limit/proposal.md");
+    await api.commit(sept(1));
+    const app = await show([web.root, api.root]);
+    await press(app, "a", "j");
+    expect(selected(app.lastFrame())).toEqual(["old-api"]);
+    await press(app, "a");
+    expect(selected(app.lastFrame())).toEqual(["login"]);
   });
 
   test("an archived Headline is shown over a newer active version, with its label and +1", async () => {
@@ -346,7 +480,7 @@ describe("Row order", () => {
     await f.write("openspec/changes/new-change/proposal.md");
     await f.commit(new Date("2026-09-05T00:00:00Z"));
     const { lastFrame } = await show(f.root);
-    expect(listLines(lastFrame()).map((line) => line.split(" ")[0])).toEqual(["new-change", "old-change"]);
+    expect(ids(lastFrame())).toEqual(["new-change", "old-change"]);
   });
 
   test("equal Change times are ordered by id", async () => {
@@ -354,7 +488,7 @@ describe("Row order", () => {
     for (const id of ["charlie", "alpha", "bravo"]) await f.write(`openspec/changes/${id}/proposal.md`);
     await f.commit(new Date("2026-09-01T00:00:00Z"));
     const { lastFrame } = await show(f.root);
-    expect(listLines(lastFrame()).map((line) => line.split(" ")[0])).toEqual(["alpha", "bravo", "charlie"]);
+    expect(ids(lastFrame())).toEqual(["alpha", "bravo", "charlie"]);
   });
 });
 
@@ -394,20 +528,152 @@ describe("Selection", () => {
     await press(app, "k", "k", "k", UP);
     expect(selected(app.lastFrame())).toEqual(["alpha"]);
   });
+
+  test("starts on the first Change, below the first header", async () => {
+    const app = await show([(await oneChange("login")).root, (await oneChange("rate-limit")).root]);
+    expect(selected(app.lastFrame())).toEqual(["login"]);
+  });
+
+  test("j crosses a Project boundary to the next Project's first Change", async () => {
+    const app = await show([(await oneChange("login")).root, (await oneChange("rate-limit")).root]);
+    await press(app, "j");
+    expect(selected(app.lastFrame())).toEqual(["rate-limit"]);
+    await press(app, "k");
+    expect(selected(app.lastFrame())).toEqual(["login"]);
+  });
+
+  test("j skips a Project without rows to select", async () => {
+    const app = await show([(await oneChange("login")).root, (await noActiveChanges()).root, (await oneChange("rate-limit")).root]);
+    await press(app, "j");
+    expect(selected(app.lastFrame())).toEqual(["rate-limit"]);
+    await press(app, "j");
+    expect(selected(app.lastFrame())).toEqual(["rate-limit"]);
+  });
+
+  test("a Project error row can be selected", async () => {
+    const gone = await fixture({ git: false });
+    const app = await show([(await oneChange("login")).root, gone.root]);
+    await press(app, "j");
+    expect(selectedLines(app.lastFrame())).toEqual([listLines(app.lastFrame())[3]!]);
+    expect(selected(app.lastFrame())).toEqual(["✗"]);
+  });
+
+  test("nothing to select: no row highlighted", async () => {
+    const app = await show([(await noActiveChanges()).root, (await noActiveChanges()).root]);
+    await press(app, "j");
+    expect(listLines(app.lastFrame()).filter((line) => line === "No active changes")).toHaveLength(2);
+    expect(selectedLines(app.lastFrame())).toEqual([]);
+  });
+});
+
+describe("List scrolling", () => {
+  /** One Project without git whose Changes `ids` are newest first. */
+  async function newestFirst(ids: string[]) {
+    const f = await fixture({ git: false });
+    for (const [i, id] of ids.entries()) await f.write(`openspec/changes/${id}/proposal.md`, "", sept(28 - i));
+    return f;
+  }
+
+  /** `c01` … `c<n>`. */
+  const cs = (n: number) => Array.from({ length: n }, (_, i) => `c${String(i + 1).padStart(2, "0")}`);
+
+  /** Four list rows, the panel beside the list. */
+  const FOUR_ROWS: Size = { columns: 200, rows: 4 };
+
+  test("the window moves just far enough to show a selection below it, and stays while the selection is shown", async () => {
+    const app = await show((await newestFirst(cs(10))).root, FOUR_ROWS);
+    expect(ids(app.lastFrame())).toEqual(["c01", "c02", "c03", "c04"]);
+    await press(app, "j", "j", "j", "j", "j");
+    expect(selected(app.lastFrame())).toEqual(["c06"]);
+    expect(ids(app.lastFrame())).toEqual(["c03", "c04", "c05", "c06"]);
+    await press(app, "k", "k", "k");
+    expect(selected(app.lastFrame())).toEqual(["c03"]);
+    expect(ids(app.lastFrame())).toEqual(["c03", "c04", "c05", "c06"]);
+  });
+
+  test("the window moves just far enough to show a selection above it", async () => {
+    const app = await show((await newestFirst(cs(10))).root, FOUR_ROWS);
+    await press(app, "j", "j", "j", "j", "j", "k", "k", "k", "k");
+    expect(selected(app.lastFrame())).toEqual(["c02"]);
+    expect(ids(app.lastFrame())).toEqual(["c02", "c03", "c04", "c05"]);
+  });
+
+  test("a short list does not scroll", async () => {
+    const app = await show((await newestFirst(cs(3))).root, FOUR_ROWS);
+    await press(app, "j", "j");
+    expect(ids(app.lastFrame())).toEqual(["c01", "c02", "c03"]);
+  });
+
+  test("crossing into the next Project shows its header; going back shows the first Project's header", async () => {
+    const web = await newestFirst(["w1", "w2", "w3"]);
+    const api = await newestFirst(["a1", "a2", "a3"]);
+    const app = await show([web.root, api.root], FOUR_ROWS);
+    await press(app, "j", "j", "j");
+    expect(selected(app.lastFrame())).toEqual(["a1"]);
+    expect(ids(app.lastFrame())).toEqual(["w2", "w3", api.root, "a1"]);
+    await press(app, "j", "j");
+    expect(selected(app.lastFrame())).toEqual(["a3"]);
+    await press(app, "k", "k", "k", "k", "k");
+    expect(selected(app.lastFrame())).toEqual(["w1"]);
+    expect(ids(app.lastFrame())).toEqual([web.root, "w1", "w2", "w3"]);
+  });
+
+  test("the window stays while the selection is shown, even with the selected Project's header above it", async () => {
+    const web = await newestFirst(["w1"]);
+    const api = await newestFirst(["a1", "a2", "a3", "a4", "a5"]);
+    const app = await show([web.root, api.root], FOUR_ROWS);
+    await press(app, "j", "j", "j", "j");
+    expect(ids(app.lastFrame())).toEqual(["a1", "a2", "a3", "a4"]);
+    await press(app, "k", "k", "k");
+    expect(selected(app.lastFrame())).toEqual(["a1"]);
+    expect(ids(app.lastFrame())).toEqual(["a1", "a2", "a3", "a4"]);
+  });
+
+  test("a taller terminal shows more rows without a key, keeping the selection", async () => {
+    const app = await show((await newestFirst(cs(10))).root, FOUR_ROWS);
+    await press(app, "j", "j", "j", "j", "j");
+    expect(ids(app.lastFrame())).toEqual(["c03", "c04", "c05", "c06"]);
+    await resize(app, { columns: 200, rows: 12 });
+    expect(ids(app.lastFrame())).toEqual(cs(10));
+    expect(selected(app.lastFrame())).toEqual(["c06"]);
+  });
 });
 
 describe("Error rows", () => {
   test("a path without openspec/ shows a single error row", async () => {
     const f = await fixture({ git: false });
     const { lastFrame } = await show(f.root);
-    expect(listLines(lastFrame())).toEqual([`✗ no openspec/ folder found at ${f.root}`]);
+    expect(listLines(lastFrame())).toEqual([cut(`✗ no openspec/ folder found at ${f.root}`, LIST_MIN_WIDTH)]);
   });
 
   test("a path that does not exist shows a single error row", async () => {
     const f = await fixture({ git: false });
     const missing = join(f.root, "nope");
     const { lastFrame } = await show(missing);
-    expect(listLines(lastFrame())).toEqual([`✗ path does not exist: ${missing}`]);
+    expect(listLines(lastFrame())).toEqual([cut(`✗ path does not exist: ${missing}`, LIST_MIN_WIDTH)]);
+  });
+
+  test("one Project unreadable: its header, then one error row cut to the list; the others shown normally", async () => {
+    const web = await fixture();
+    await web.write("openspec/changes/login/proposal.md");
+    const empty = await fixture({ git: false });
+    const { lastFrame } = await show([web.root, empty.root]);
+    const login = `login  P S D T  ${"░".repeat(20)}  0/0  main`;
+    expect(listLines(lastFrame())).toEqual([web.root, login, empty.root, cut(`✗ no openspec/ folder found at ${empty.root}`, login.length)]);
+    expect(styledLine(lastFrame(), "✗ no openspec/")).toContain("\u001B[31m");
+  });
+
+  test("--base missing in one Project: that Project's error row names the ref, the other uses it as its Base", async () => {
+    const web = await fixture();
+    await web.write("openspec/changes/login/proposal.md");
+    await web.commit(sept(1));
+    await web.git("checkout", "-q", "-b", "develop");
+    const api = await fixture();
+    await api.write("openspec/changes/rate-limit/proposal.md");
+    await api.commit(sept(1));
+    const { lastFrame } = await show([web.root, api.root], ROOMY, { base: "develop" });
+    const login = `login  P S D T  ${"░".repeat(20)}  0/0  develop`;
+    expect(listLines(lastFrame())).toEqual([web.root, login, api.root, "✗ unknown --base ref: develop"]);
   });
 
   for (const file of ["tasks.md", "proposal.md"]) {
@@ -439,7 +705,7 @@ describe("Error rows", () => {
         change.id !== "broken" ? change : { ...change, versions: [{ ...change.versions[0]!, kind: "error", message: "m".repeat(300) }] },
       ),
     };
-    const app = render(<App initial={snapshot} read={async () => snapshot} />);
+    const app = render(<App projects={[{ label: f.root, initial: snapshot, read: async () => snapshot }]} />);
     await resize(app, { columns: 200, rows: 20 });
     const lines = listLines(app.lastFrame());
     expect(lines).toHaveLength(2);
@@ -546,6 +812,39 @@ describe("Expanding a Change", () => {
     expect(listLines(app.lastFrame())).toHaveLength(2);
     expect(selected(app.lastFrame())).toEqual(["add-auth"]);
   });
+
+  test("the same change id in two Projects expands separately", async () => {
+    /** A Project whose `add-auth` has a version on `main` (1/2) and a newer one on `feat` (2/2). */
+    async function twoVersions() {
+      const f = await fixture();
+      await f.write("openspec/changes/add-auth/tasks.md", TASKS(1, 2));
+      await f.commit(sept(1));
+      await f.git("checkout", "-q", "-b", "feat");
+      await f.write("openspec/changes/add-auth/tasks.md", TASKS(2, 2));
+      await f.commit(sept(3));
+      await f.git("checkout", "-q", "main");
+      return f;
+    }
+    const web = await twoVersions();
+    const api = await twoVersions();
+    const app = await show([web.root, api.root]);
+    await press(app, ENTER);
+    expect(listLines(app.lastFrame()).map((line) => line.replace(/ +/g, " "))).toEqual([
+      web.root,
+      `add-auth P S D T ${"█".repeat(20)} 2/2 feat ✓ ready to archive`,
+      `add-auth P S D T ${"█".repeat(10)}${"░".repeat(10)} 1/2 main`,
+      api.root,
+      `add-auth P S D T ${"█".repeat(20)} 2/2 feat +1 ✓ ready to archive`,
+    ]);
+  });
+
+  test("Enter on a Project error row changes nothing", async () => {
+    const app = await show([(await oneChange("login")).root, (await fixture({ git: false })).root]);
+    await press(app, "j");
+    const before = app.lastFrame();
+    await press(app, ENTER);
+    expect(app.lastFrame()).toBe(before);
+  });
 });
 
 describe("Quit", () => {
@@ -560,7 +859,7 @@ describe("Quit", () => {
     }
     const app = render(
       <>
-        <App initial={await readProject(f.root)} read={() => readProject(f.root)} />
+        <App projects={[{ label: f.root, initial: await readProject(f.root), read: () => readProject(f.root) }]} />
         <Sentinel />
       </>,
     );
@@ -592,10 +891,20 @@ describe("Problems during a refresh", () => {
     const app = await show(f.root);
     await rename(join(f.root, "openspec"), join(f.root, "moved"));
     await refresh(app);
-    expect(listLines(app.lastFrame())).toEqual([`✗ no openspec/ folder found at ${f.root}`]);
+    expect(listLines(app.lastFrame())).toEqual([cut(`✗ no openspec/ folder found at ${f.root}`, LIST_MIN_WIDTH)]);
     await rename(join(f.root, "moved"), join(f.root, "openspec"));
     await refresh(app);
     expect(listLines(app.lastFrame())).toEqual([`add-auth  P S D T  ${"█".repeat(6)}${"░".repeat(14)}  3/10  main`]);
+  });
+
+  test("one Project breaking shows its error row; the other Project's rows are unchanged", async () => {
+    const web = await oneChange("login");
+    const api = await oneChange("rate-limit");
+    const app = await show([web.root, api.root]);
+    await rename(join(api.root, "openspec"), join(api.root, "moved"));
+    await refresh(app);
+    const login = `login  P S D T  ${"░".repeat(20)}  0/0  main`;
+    expect(listLines(app.lastFrame())).toEqual([web.root, login, api.root, cut(`✗ no openspec/ folder found at ${api.root}`, login.length)]);
   });
 });
 
@@ -620,7 +929,7 @@ describe("Periodic refresh", () => {
     await f.write("openspec/changes/fix-login/proposal.md", "", sept(2));
     await advance(5000);
     await app.refreshed();
-    expect(listLines(app.lastFrame()).map((line) => line.split(" ")[0])).toEqual(["newer", "fix-login", "old"]);
+    expect(ids(app.lastFrame())).toEqual(["newer", "fix-login", "old"]);
   });
 
   test("nothing changes before the interval", async () => {
@@ -632,6 +941,19 @@ describe("Periodic refresh", () => {
     await app.refreshed();
     expect(app.reads).toHaveLength(0);
     expect(listLines(app.lastFrame())).toEqual([`add-auth  P S D T  ${"█".repeat(6)}${"░".repeat(14)}  3/10  main`]);
+  });
+
+  test("every Project is re-read", async () => {
+    const web = await fixture();
+    await web.write("openspec/changes/login/tasks.md", TASKS(1, 4));
+    const api = await fixture();
+    await api.write("openspec/changes/rate-limit/tasks.md", TASKS(1, 4));
+    const app = await show([web.root, api.root]);
+    await web.write("openspec/changes/login/tasks.md", TASKS(2, 4));
+    await api.write("openspec/changes/rate-limit/tasks.md", TASKS(3, 4));
+    await advance(5000);
+    await app.refreshed();
+    expect(progress(app.lastFrame())).toEqual(["2/4", "3/4"]);
   });
 
   test("no read starts after the dashboard exits", async () => {
@@ -656,7 +978,7 @@ describe("No overlapping reads", () => {
       pending.push(resolve);
       return promise;
     };
-    const app = render(<App initial={await readProject(f.root)} read={read} />);
+    const app = render(<App projects={[{ label: f.root, initial: await readProject(f.root), read }]} />);
     await press(app, "r");
     await advance(5000);
     await press(app, "r");
@@ -670,6 +992,65 @@ describe("No overlapping reads", () => {
     await press(app, "r");
     expect(pending).toHaveLength(3);
   });
+
+  /** Two Projects, `login` in `web` (1/4) and `rate-limit` in `api` (1/4): reads of `web` wait until the test resolves them from `pending`; reads of `api` are real. */
+  async function slowWeb() {
+    const web = await fixture();
+    await web.write("openspec/changes/login/tasks.md", TASKS(1, 4));
+    const api = await fixture();
+    await api.write("openspec/changes/rate-limit/tasks.md", TASKS(1, 4));
+    const pending: ((snapshot: ProjectSnapshot) => void)[] = [];
+    const slow = () => {
+      const { promise, resolve } = Promise.withResolvers<ProjectSnapshot>();
+      pending.push(resolve);
+      return promise;
+    };
+    const apiReads: Promise<ProjectSnapshot>[] = [];
+    const fast = () => {
+      const reading = readProject(api.root);
+      apiReads.push(reading);
+      return reading;
+    };
+    const app = render(
+      <App
+        projects={[
+          { label: web.root, initial: await readProject(web.root), read: slow },
+          { label: api.root, initial: await readProject(api.root), read: fast },
+        ]}
+      />,
+    );
+    await resize(app, ROOMY);
+    const apiRead = async () => {
+      await Promise.all(apiReads);
+      await settle();
+    };
+    return { web, api, app, pending, apiReads, apiRead };
+  }
+
+  test("a slow Project does not hold up another: its rows show the previous read meanwhile", async () => {
+    const { web, api, app, pending, apiRead } = await slowWeb();
+    await web.write("openspec/changes/login/tasks.md", TASKS(2, 4));
+    await api.write("openspec/changes/rate-limit/tasks.md", TASKS(3, 4));
+    await press(app, "r");
+    await apiRead();
+    expect(pending).toHaveLength(1);
+    expect(progress(app.lastFrame())).toEqual(["1/4", "3/4"]);
+    pending[0]!(await readProject(web.root));
+    // The read's dispatch runs on the next turn; its frame then waits out Ink's 30fps throttle.
+    await settle();
+    await advance(50);
+    expect(progress(app.lastFrame())).toEqual(["2/4", "3/4"]);
+  });
+
+  test("a tick during a slow Project's read skips it and still reads the others", async () => {
+    const { pending, apiReads, apiRead } = await slowWeb();
+    await advance(5000);
+    await apiRead();
+    await advance(5000);
+    await apiRead();
+    expect(pending).toHaveLength(1);
+    expect(apiReads).toHaveLength(2);
+  });
 });
 
 describe("Place kept across a refresh", () => {
@@ -681,7 +1062,7 @@ describe("Place kept across a refresh", () => {
     await press(app, "j");
     await f.write("openspec/changes/bravo/tasks.md", TASKS(1, 2), sept(9));
     await refresh(app);
-    expect(listLines(app.lastFrame()).map((line) => line.split(" ")[0])).toEqual(["bravo", "alpha"]);
+    expect(ids(app.lastFrame())).toEqual(["bravo", "alpha"]);
     expect(selected(app.lastFrame())).toEqual(["bravo"]);
   });
 
@@ -719,7 +1100,7 @@ describe("Place kept across a refresh", () => {
     expect(selectedLines(app.lastFrame())).toEqual([`add-auth  P S D T  ${"█".repeat(10)}${"░".repeat(10)}  2/4  wt:wt-auth`]);
     await f.git("worktree", "remove", "--force", wt.root);
     await refresh(app);
-    expect(listLines(app.lastFrame()).map((line) => line.split(" ")[0])).toEqual(["add-auth", "zeta"]);
+    expect(ids(app.lastFrame())).toEqual(["add-auth", "zeta"]);
     expect(selected(app.lastFrame())).toEqual(["add-auth"]);
   });
 
@@ -736,7 +1117,7 @@ describe("Place kept across a refresh", () => {
     await press(app, "j");
     await rm(join(f.root, "openspec/changes/bravo"), { recursive: true });
     await refresh(app);
-    expect(listLines(app.lastFrame()).map((line) => line.split(" ")[0])).toEqual(["alpha", "charlie"]);
+    expect(ids(app.lastFrame())).toEqual(["alpha", "charlie"]);
     expect(selected(app.lastFrame())).toEqual(["charlie"]);
   });
 
@@ -763,8 +1144,54 @@ describe("Place kept across a refresh", () => {
     await f.git("mv", "openspec/changes/add-auth", "openspec/changes/archive/2026-09-06-add-auth");
     await f.commit(sept(6));
     await refresh(app);
-    expect(listLines(app.lastFrame()).map((line) => line.split(" ")[0])).toEqual(["newer", "older"]);
+    expect(ids(app.lastFrame())).toEqual(["newer", "older"]);
     expect(selected(app.lastFrame())).toEqual(["older"]);
+  });
+
+  test("rows added in a Project above keep the selected row selected", async () => {
+    const web = await oneChange("login", sept(1));
+    const api = await oneChange("rate-limit");
+    const app = await show([web.root, api.root]);
+    await press(app, "j");
+    expect(selected(app.lastFrame())).toEqual(["rate-limit"]);
+    await web.write("openspec/changes/fix-nav/proposal.md");
+    await web.commit(sept(5));
+    await refresh(app);
+    expect(ids(app.lastFrame())).toEqual([web.root, "fix-nav", "login", api.root, "rate-limit"]);
+    expect(selected(app.lastFrame())).toEqual(["rate-limit"]);
+  });
+
+  test("the selected Project's error row, once the Project is readable, gives way to its first Change", async () => {
+    const web = await oneChange("login");
+    const api = await oneChange("rate-limit");
+    await rename(join(web.root, "openspec"), join(web.root, "moved"));
+    const app = await show([web.root, api.root]);
+    expect(selected(app.lastFrame())).toEqual(["✗"]);
+    await rename(join(web.root, "moved"), join(web.root, "openspec"));
+    await refresh(app);
+    expect(selected(app.lastFrame())).toEqual(["login"]);
+  });
+
+  test("the selected Project's last Change gone: No active changes, and the next Project's first Change is selected", async () => {
+    const web = await oneChange("login");
+    const api = await oneChange("rate-limit");
+    const app = await show([web.root, api.root]);
+    await rm(join(web.root, "openspec/changes/login"), { recursive: true });
+    await refresh(app);
+    expect(listLines(app.lastFrame()).slice(0, 2)).toEqual([web.root, "No active changes"]);
+    expect(selected(app.lastFrame())).toEqual(["rate-limit"]);
+  });
+
+  test("the selected last Change of a Project gone: the Project's new last Change, not the next Project's", async () => {
+    const web = await fixture({ git: false });
+    for (const [id, date] of [["alpha", sept(5)], ["bravo", sept(3)], ["charlie", sept(1)]] as const) await web.write(`openspec/changes/${id}/proposal.md`, "", date);
+    const api = await oneChange("rate-limit");
+    const app = await show([web.root, api.root]);
+    await press(app, "j", "j");
+    expect(selected(app.lastFrame())).toEqual(["charlie"]);
+    await rm(join(web.root, "openspec/changes/charlie"), { recursive: true });
+    await refresh(app);
+    expect(selected(app.lastFrame())).toEqual(["bravo"]);
   });
 });
 
@@ -811,16 +1238,16 @@ describe("Panel shows the selected Change version", () => {
   });
 
   test("no rows: no panel", async () => {
-    const f = await fixture();
-    await f.write("openspec/changes/archive/2026-08-01-old/proposal.md");
+    const f = await noActiveChanges();
     const { lastFrame } = await show(f.root);
     expect(stripVTControlCharacters(lastFrame() ?? "")).toBe("No active changes");
   });
 
-  test("Project error: no panel", async () => {
+  test("Project error: its row is selected and the panel shows the Project's path and error", async () => {
     const f = await fixture({ git: false });
     const { lastFrame } = await show(f.root);
-    expect(stripVTControlCharacters(lastFrame() ?? "")).toBe(`✗ no openspec/ folder found at ${f.root}`);
+    expect(selected(lastFrame())).toEqual(["✗"]);
+    expect(panelLines(lastFrame())).toEqual([f.root, `no openspec/ folder found at ${f.root}`]);
   });
 });
 
@@ -987,6 +1414,20 @@ describe("Panel empty and error cases", () => {
     expect(message.join("").replace(/\s/g, "")).toBe(error.message.replace(/\s/g, ""));
     expect(styledLine(app.lastFrame(), message[0]!)).toContain("\u001B[31m");
   });
+
+  test("a Project error row selected: the path as given, then the full message, wrapped", async () => {
+    const web = await oneChange("login");
+    const empty = join((await fixture({ git: false })).root, "x".repeat(80));
+    await mkdir(empty);
+    // 70 columns puts the panel below the 43-column list, narrower than the message.
+    const app = await show([web.root, empty], { columns: 70, rows: 30 });
+    await press(app, "j");
+    const [first, ...message] = panelLines(app.lastFrame());
+    expect(first).toBe(cut(empty, 69));
+    expect(message.length).toBeGreaterThan(1);
+    expect(message.join("").replace(/\s/g, "")).toBe(`no openspec/ folder found at ${empty}`.replace(/\s/g, ""));
+    expect(styledLine(app.lastFrame(), message[0]!)).toContain("\u001B[31m");
+  });
 });
 
 /** Where the frame draws the panel: beside the list, below it, or nowhere. */
@@ -1083,14 +1524,15 @@ describe("Fitting the panel's height", () => {
     expect(panelLines(app.lastFrame())).toEqual(["a  main", "1. Draw  0/8", "  ○ 1.1", "  ○ 1.2", "  ○ 1.3", "… 8 more"]);
   });
 
-  test("below a list that fills the terminal: the first line and … N more", async () => {
+  test("below a list that fills the terminal: the list scrolls and the panel keeps the last two rows", async () => {
     const f = await fixture();
     await f.write("openspec/changes/a/tasks.md", "- [ ] 1\n- [ ] 2\n- [ ] 3\n", sept(9));
-    for (const id of ["b", "c", "d"]) await f.write(`openspec/changes/${id}/proposal.md`, "", sept(1));
-    const app = await show(f.root, { columns: 60, rows: 4 });
+    for (const id of ["b", "c", "d", "e", "f", "g", "h", "i", "j"]) await f.write(`openspec/changes/${id}/proposal.md`, "", sept(1));
+    const app = await show(f.root, { columns: 60, rows: 7 });
     expect(placement(app.lastFrame())).toBe("below");
-    expect(listLines(app.lastFrame())).toHaveLength(4);
+    expect(ids(app.lastFrame())).toEqual(["a", "b", "c", "d"]);
     expect(panelLines(app.lastFrame())).toEqual(["a  main", "… 3 more"]);
+    expect(stripVTControlCharacters(app.lastFrame()!).split("\n")).toHaveLength(7);
   });
 
   test("no task below the cut: … alone", async () => {

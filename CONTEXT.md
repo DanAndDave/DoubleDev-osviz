@@ -53,5 +53,5 @@ A Change whose Headline version is not archived and has at least one task checkb
 _Avoid_: done, complete
 
 **Detail panel**:
-What is shown about the selected row's Change version: its Task sections and its blocking and triage lines.
+What is shown about the selected row: for a Change row, its Change version's Task sections and its blocking and triage lines; for a Project that cannot be read, its path and the full error.
 _Avoid_: sidebar, inspector, preview

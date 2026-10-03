@@ -10,21 +10,16 @@ type PanelLine =
   | { kind: "task"; task: Task };
 
 /**
- * The Detail panel for `version`, in `height` rows. `labelled` says whether the Project has Source
- * labels; `beside` puts the panel's border on its left, for a panel right of the list, rather than on
- * top, for one below it. The border takes no row of `height`.
+ * What the panel shows: a Change version, with `labelled` saying whether its Project has Source labels,
+ * or a Project that cannot be read, by its path as given and its error.
  */
-export function Panel({
-  version,
-  labelled,
-  beside,
-  height,
-}: {
-  version: ChangeVersion;
-  labelled: boolean;
-  beside: boolean;
-  height: number;
-}) {
+export type PanelSubject = { kind: "version"; version: ChangeVersion; labelled: boolean } | { kind: "project"; label: string; message: string };
+
+/**
+ * The Detail panel for `subject`, in `height` rows. `beside` puts the panel's border on its left, for a
+ * panel right of the list, rather than on top, for one below it. The border takes no row of `height`.
+ */
+export function Panel({ subject, beside, height }: { subject: PanelSubject; beside: boolean; height: number }) {
   return (
     <Box
       flexDirection="column"
@@ -37,7 +32,7 @@ export function Panel({
       borderBottom={false}
       paddingLeft={1}
     >
-      {fitPanel(version, labelled, height).map((line, i) => (
+      {fitPanel(subject, height).map((line, i) => (
         <Line key={i} line={line} />
       ))}
     </Box>
@@ -45,14 +40,18 @@ export function Panel({
 }
 
 /**
- * The panel's lines for `version`, at most `height` (at least 2) of them. When every line does not
+ * The panel's lines for `subject`, at most `height` (at least 2) of them. When every line does not
  * fit, finished Task sections collapse to their heading line from the top, one at a time, until they
  * do; if they still do not, the lines are cut and end with `… N more`, N counting the tasks cut. An
- * error's message is not fitted: it wraps, and there are no tasks to cut.
+ * error's message, a Change version's or a Project's, is not fitted: it wraps, and there are no tasks
+ * to cut.
  */
-function fitPanel(version: ChangeVersion, labelled: boolean, height: number): PanelLine[] {
-  const first: PanelLine = { kind: "text", text: labelled ? `${version.id}  ${version.source ?? ""}` : version.id, bold: true };
-  if (version.kind === "error") return [first, { kind: "error", message: version.message }];
+function fitPanel(subject: PanelSubject, height: number): PanelLine[] {
+  if (subject.kind === "project") return errorLines(subject.label, subject.message);
+  const { version, labelled } = subject;
+  const title = labelled ? `${version.id}  ${version.source ?? ""}` : version.id;
+  if (version.kind === "error") return errorLines(title, version.message);
+  const first: PanelLine = { kind: "text", text: title, bold: true };
 
   const head: PanelLine[] = [first];
   for (const text of [version.blockedBy, version.triage]) if (text !== undefined) head.push({ kind: "text", text });
@@ -73,6 +72,14 @@ function fitPanel(version: ChangeVersion, labelled: boolean, height: number): Pa
   const kept = lines.slice(0, height - 1);
   const cut = lines.slice(height - 1).reduce((n, line) => n + tasksIn(line), 0);
   return [...kept, { kind: "text", text: cut === 0 ? "…" : `… ${cut} more`, dim: true }];
+}
+
+/** An error's panel: `title` in bold, then the full message, which wraps. */
+function errorLines(title: string, message: string): PanelLine[] {
+  return [
+    { kind: "text", text: title, bold: true },
+    { kind: "error", message },
+  ];
 }
 
 /** A Task section's heading line, if it has a heading, and its task lines unless `collapsed`. */

@@ -9,5 +9,10 @@ if ("error" in args) {
   console.error(`osviz: ${args.error}\n${USAGE}`);
   process.exit(2);
 }
-const read = () => readProject(args.path, { base: args.base });
-await render(<App initial={await read()} read={read} />).waitUntilExit();
+const projects = await Promise.all(
+  args.projects.map(async ({ label, path }) => {
+    const read = () => readProject(path, { base: args.base });
+    return { label, initial: await read(), read };
+  }),
+);
+await render(<App projects={projects} />).waitUntilExit();
