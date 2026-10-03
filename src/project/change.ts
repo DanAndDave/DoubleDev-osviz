@@ -1,4 +1,5 @@
-import { countTasks, type TaskProgress } from "../tasks.ts";
+import { type ProposalLines, parseProposal } from "../proposal.ts";
+import { parseTasks, progressOf, type TaskProgress, type TaskSection } from "../tasks.ts";
 
 export interface Artifacts {
   proposal: boolean;
@@ -21,11 +22,13 @@ export interface ChangeDir {
  * One Change version as read from one Source. `source` is the Source label; `undefined` only for a
  * Project outside git, which has a single unlabelled Source.
  */
-export interface ChangeSummary extends ChangeDir {
+export interface ChangeSummary extends ChangeDir, ProposalLines {
   kind: "change";
   source: string | undefined;
   artifacts: Artifacts;
+  /** The sum of `sections`' progress. */
   tasks: TaskProgress;
+  sections: TaskSection[];
   changeTime: Date;
 }
 
@@ -56,22 +59,27 @@ export function isReadyToArchive(change: Change): boolean {
   return headline?.kind === "change" && !headline.archived && headline.tasks.total > 0 && headline.tasks.done === headline.tasks.total;
 }
 
-/** A readable Change version; `tasksContent` is `undefined` when the Change has no `tasks.md`. */
+/** A readable Change version; `proposalContent` and `tasksContent` are `undefined` when the file does not exist. */
 export function changeSummary(
   { dir, id, archived }: ChangeDir,
   source: string | undefined,
-  { proposal, specs, design }: Omit<Artifacts, "tasks">,
+  { specs, design }: Pick<Artifacts, "specs" | "design">,
+  proposalContent: string | undefined,
   tasksContent: string | undefined,
   changeTime: Date,
 ): ChangeSummary {
+  const sections = tasksContent === undefined ? [] : parseTasks(tasksContent);
+  const proposal = proposalContent === undefined ? { blockedBy: undefined, triage: undefined } : parseProposal(proposalContent);
   return {
     kind: "change",
     dir,
     id,
     archived,
     source,
-    artifacts: { proposal, specs, design, tasks: tasksContent !== undefined },
-    tasks: tasksContent === undefined ? { done: 0, total: 0 } : countTasks(tasksContent),
+    artifacts: { proposal: proposalContent !== undefined, specs, design, tasks: tasksContent !== undefined },
+    tasks: progressOf(sections.flatMap((section) => section.tasks)),
+    sections,
+    ...proposal,
     changeTime,
   };
 }

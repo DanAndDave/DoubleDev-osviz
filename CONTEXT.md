@@ -44,6 +44,14 @@ _Avoid_: file, doc
 The count of checked task checkboxes over all task checkboxes in a Change version's `tasks.md`.
 _Avoid_: completion, percent done
 
+**Task section**:
+One `##` heading of a Change version's `tasks.md` and the task checkboxes under it, with its own Task progress.
+_Avoid_: group, phase
+
 **Ready to archive**:
 A Change whose Headline version is not archived and has at least one task checkbox, all ticked. A Change with no task checkboxes is not Ready to archive, as `openspec list` reports it as "No tasks".
 _Avoid_: done, complete
+
+**Detail panel**:
+What is shown about the selected row's Change version: its Task sections and its blocking and triage lines.
+_Avoid_: sidebar, inspector, preview

@@ -3,20 +3,48 @@ export interface TaskProgress {
   total: number;
 }
 
+/** One task checkbox: whether it is ticked, its leading whitespace length, and its text after the box. */
+export interface Task {
+  done: boolean;
+  indent: number;
+  text: string;
+}
+
+/** The tasks under one `##` heading, or before the first one (`heading` undefined). */
+export interface TaskSection {
+  heading: string | undefined;
+  tasks: Task[];
+}
+
 /**
  * Copied verbatim from OpenSpec 1.13.0 (`dist/utils/task-progress.js`) so our counts match
  * `openspec list`. Applied to every line, code fences included. Group 1 is the box contents.
  */
 const TASK_LINE = /^\s*[-*]\s*\[([\sxX])\]\s*(.*)/;
 
-export function countTasks(content: string): TaskProgress {
-  let done = 0;
-  let total = 0;
+/** A `##` heading; `###` and deeper do not match, so their tasks stay in the `##` section above. */
+const SECTION_HEADING = /^##\s+(.*)/;
+
+/**
+ * The Task sections of `content`, in file order: tasks before the first `##` heading form a section
+ * without a heading, and every task line counted by `TASK_LINE` lands in exactly one section. Sections
+ * without tasks are left out.
+ */
+export function parseTasks(content: string): TaskSection[] {
+  const sections: TaskSection[] = [{ heading: undefined, tasks: [] }];
   for (const line of content.split("\n")) {
-    const match = TASK_LINE.exec(line);
-    if (!match) continue;
-    total++;
-    if (match[1] === "x" || match[1] === "X") done++;
+    const task = TASK_LINE.exec(line);
+    if (task) {
+      sections.at(-1)!.tasks.push({ done: task[1] === "x" || task[1] === "X", indent: line.search(/\S/), text: task[2]!.trimEnd() });
+      continue;
+    }
+    const heading = SECTION_HEADING.exec(line);
+    if (heading) sections.push({ heading: heading[1]!.trim(), tasks: [] });
   }
-  return { done, total };
+  return sections.filter((section) => section.tasks.length > 0);
+}
+
+/** Task progress of a list of tasks. */
+export function progressOf(tasks: Task[]): TaskProgress {
+  return { done: tasks.filter((task) => task.done).length, total: tasks.length };
 }

@@ -173,6 +173,27 @@ describe("Artifact presence", () => {
     const rows = changesOf(await readProject(f.root));
     expect(rows.get("half")?.artifacts).toEqual({ proposal: false, specs: false, design: true, tasks: true });
   });
+
+  test("a branch checked out nowhere: each Change gets its own proposal lines and Task sections", async () => {
+    const f = await fixture();
+    await f.write("openspec/changes/other/proposal.md");
+    await f.commit(sept(1));
+    await f.git("checkout", "-q", "-b", "feat");
+    await f.write("openspec/changes/a/tasks.md", "## 1. A\n- [x] a\n");
+    await f.write("openspec/changes/b/proposal.md", "Blocked by: a\n");
+    await f.write("openspec/changes/b/tasks.md", "## 1. B\n- [ ] b\n- [x] c\n");
+    await f.write("openspec/changes/c/proposal.md", "Triage: ready-for-agent\n");
+    await f.commit(sept(2));
+    await f.git("checkout", "-q", "main");
+    const rows = changesOf(await readProject(f.root));
+    const detail = (id: string) => {
+      const { source, blockedBy, triage, sections } = rows.get(id)!;
+      return { source, blockedBy, triage, sections: sections.map((s) => `${s.heading} ${s.tasks.map((t) => t.text).join(",")}`) };
+    };
+    expect(detail("a")).toEqual({ source: "feat", blockedBy: undefined, triage: undefined, sections: ["1. A a"] });
+    expect(detail("b")).toEqual({ source: "feat", blockedBy: "Blocked by: a", triage: undefined, sections: ["1. B b,c"] });
+    expect(detail("c")).toEqual({ source: "feat", blockedBy: undefined, triage: "Triage: ready-for-agent", sections: [] });
+  });
 });
 
 describe("Change time", () => {
@@ -286,18 +307,20 @@ describe("Errors", () => {
     expect(snapshot.kind === "error" && snapshot.message).toContain("git status failed");
   });
 
-  test.skipIf(process.getuid?.() === 0)("an unreadable tasks.md is an error row for that Change only", async () => {
-    const f = await fixture();
-    await f.write("openspec/changes/broken/tasks.md", "- [x] a\n");
-    await f.write("openspec/changes/fine/tasks.md", "- [x] a\n");
-    await chmod(join(f.root, "openspec/changes/broken/tasks.md"), 0o000);
-    const snapshot = await readProject(f.root);
-    if (snapshot.kind !== "ok") throw new Error(snapshot.message);
-    const broken = snapshot.changes.find((change) => change.id === "broken")?.versions[0];
-    expect(broken?.kind).toBe("error");
-    expect(broken?.kind === "error" && broken.message).toContain("permission denied");
-    expect(snapshot.changes.find((change) => change.id === "fine")?.versions[0]).toMatchObject({ kind: "change", tasks: { done: 1, total: 1 } });
-  });
+  for (const file of ["tasks.md", "proposal.md"]) {
+    test.skipIf(process.getuid?.() === 0)(`an unreadable ${file} is an error row for that Change only`, async () => {
+      const f = await fixture();
+      await f.write(`openspec/changes/broken/${file}`, "- [x] a\n");
+      await f.write("openspec/changes/fine/tasks.md", "- [x] a\n");
+      await chmod(join(f.root, `openspec/changes/broken/${file}`), 0o000);
+      const snapshot = await readProject(f.root);
+      if (snapshot.kind !== "ok") throw new Error(snapshot.message);
+      const broken = snapshot.changes.find((change) => change.id === "broken")?.versions[0];
+      expect(broken?.kind).toBe("error");
+      expect(broken?.kind === "error" && broken.message).toContain("permission denied");
+      expect(snapshot.changes.find((change) => change.id === "fine")?.versions[0]).toMatchObject({ kind: "change", tasks: { done: 1, total: 1 } });
+    });
+  }
 });
 
 describe("Reading never writes", () => {

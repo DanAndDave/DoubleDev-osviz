@@ -75,14 +75,14 @@ async function readHistory(dir: string, prefix: string): Promise<History | { kin
 async function readChange(path: string, changeDir: ChangeDir, source: string | undefined, history: History): Promise<ChangeVersion> {
   const commitTime =
     history.kind === "git" && !history.uncommitted.has(changeDir.dir) ? history.committed.get(changeDir.dir) : undefined;
-  const [proposal, specs, design, tasksContent, changeTime] = await Promise.all([
-    exists(join(path, "proposal.md")),
+  const [proposalContent, specs, design, tasksContent, changeTime] = await Promise.all([
+    readOptional(join(path, "proposal.md")),
     hasMarkdown(join(path, "specs")),
     exists(join(path, "design.md")),
     readOptional(join(path, "tasks.md")),
     commitTime ?? newestMtime(path),
   ]);
-  return changeSummary(changeDir, source, { proposal, specs, design }, tasksContent, changeTime);
+  return changeSummary(changeDir, source, { specs, design }, proposalContent, tasksContent, changeTime);
 }
 
 async function hasMarkdown(dir: string): Promise<boolean> {

@@ -1,4 +1,4 @@
-import { Box, Text, useApp, useInput } from "ink";
+import { Box, Text, useApp, useInput, useWindowSize } from "ink";
 import { useEffect, useReducer, useRef } from "react";
 import {
   type Artifacts,
@@ -9,8 +9,12 @@ import {
   isReadyToArchive,
   type ProjectSnapshot,
 } from "../project/read.ts";
+import { Panel } from "./Panel.tsx";
 
 const BAR_WIDTH = 20;
+/** The list's narrowest width, and the panel's narrowest beside it, border included. */
+const LIST_MIN_WIDTH = 40;
+const PANEL_MIN_WIDTH = 40;
 const REFRESH_MS = 5000;
 const ARTIFACT_LETTERS: [keyof Artifacts, string][] = [
   ["proposal", "P"],
@@ -61,6 +65,7 @@ export function App({ initial, read }: { initial: ProjectSnapshot; read: () => P
   const { snapshot, selected } = state;
   const rows = rowsOf(state);
   const { exit } = useApp();
+  const { columns: terminalColumns, rows: terminalRows } = useWindowSize();
   // Set while a read is in progress; a tick or `r` that comes due meanwhile is skipped, not queued.
   const reading = useRef(false);
   const refresh = () => {
@@ -87,28 +92,38 @@ export function App({ initial, read }: { initial: ProjectSnapshot; read: () => P
   if (snapshot.kind !== "ok") return <Text color="red">✗ {snapshot.message}</Text>;
   if (rows.length === 0) return <Text>No active changes</Text>;
   const summaries = rows.flatMap((row) => (row.version.kind === "change" ? [row.version] : []));
-  const widths = {
+  const widths: Widths = {
     id: Math.max(...rows.map((row) => row.change.id.length)),
     progress: Math.max(0, ...summaries.map((v) => progressText(v).length)),
     label: snapshot.labelled ? Math.max(...rows.map((row) => row.version.source?.length ?? 0)) : undefined,
   };
+  const listWidth = Math.max(
+    LIST_MIN_WIDTH,
+    ...rows.flatMap((row) => (row.version.kind === "change" ? [changeRowWidth(row.version, row.others, markerOf(row), widths)] : [])),
+  );
+  const beside = terminalColumns >= listWidth + PANEL_MIN_WIDTH;
+  // Below the list, the panel gets the rows the list and its border leave, but always room for its first line and a cut line.
+  const panelHeight = Math.max(beside ? terminalRows : terminalRows - rows.length - 1, 2);
   return (
-    <Box flexDirection="column">
-      {rows.map((row, i) => (
-        <Text key={i} inverse={i === selected}>
-          {row.version.kind === "change" ? (
-            <ChangeLine version={row.version} others={row.others} widths={widths} />
-          ) : (
-            <Text>
-              {row.version.id.padEnd(widths.id)}
-              {widths.label === undefined ? "" : `  ${row.version.source ?? ""}`}
-              {"  "}
-              <Text color="red">✗ {row.version.message}</Text>
-            </Text>
-          )}
-          <Marker row={row} />
-        </Text>
-      ))}
+    <Box width={terminalColumns} flexDirection={beside ? "row" : "column"}>
+      <Box flexDirection="column" flexShrink={0} width={listWidth}>
+        {rows.map((row, i) => (
+          <Text key={i} inverse={i === selected} wrap="truncate-end">
+            {row.version.kind === "change" ? (
+              <ChangeLine version={row.version} others={row.others} widths={widths} />
+            ) : (
+              <Text>
+                {row.version.id.padEnd(widths.id)}
+                {widths.label === undefined ? "" : `  ${row.version.source ?? ""}`}
+                {"  "}
+                <Text color="red">✗ {row.version.message}</Text>
+              </Text>
+            )}
+            <Marker row={row} />
+          </Text>
+        ))}
+      </Box>
+      <Panel version={rows[selected]!.version} labelled={snapshot.labelled} beside={beside} height={panelHeight} />
     </Box>
   );
 }
@@ -170,32 +185,48 @@ function rowsOf({ snapshot, expanded, showArchived }: Omit<State, "selected">): 
     });
 }
 
-/** `archived` on any archived version's row; `✓ ready to archive` on a Ready to archive Change's Headline row. */
+/** The marker ending a row, if any: `archived` on any archived version's row, `✓ ready to archive` on a Ready to archive Change's Headline row. */
+function markerOf(row: Row): "archived" | "✓ ready to archive" | undefined {
+  if (row.version.archived) return "archived";
+  if (row.version === row.change.versions[0] && isReadyToArchive(row.change)) return "✓ ready to archive";
+  return undefined;
+}
+
 function Marker({ row }: { row: Row }) {
-  if (row.version.archived) return <Text>{"  "}<Text dimColor>archived</Text></Text>;
-  if (row.version !== row.change.versions[0] || !isReadyToArchive(row.change)) return null;
-  return <Text>{"  "}<Text color="green">✓ ready to archive</Text></Text>;
+  const marker = markerOf(row);
+  if (marker === undefined) return null;
+  return <Text>{"  "}{marker === "archived" ? <Text dimColor>{marker}</Text> : <Text color="green">{marker}</Text>}</Text>;
+}
+
+interface Widths {
+  id: number;
+  progress: number;
+  label: number | undefined;
+}
+
+/** The columns after the bar: progress, then Source label and `+N` when the Project has Source labels. */
+function columnsText(version: ChangeSummary, others: number, widths: Widths): string {
+  if (widths.label === undefined) return progressText(version);
+  return [progressText(version).padEnd(widths.progress), (version.source ?? "").padEnd(widths.label), others > 0 ? `+${others}` : ""]
+    .join("  ")
+    .trimEnd();
+}
+
+/**
+ * The width of a Change row in terminal columns. String length is display width here: ids and labels
+ * are ASCII, and `█░✓` are single-width.
+ */
+function changeRowWidth(version: ChangeSummary, others: number, marker: string | undefined, widths: Widths): number {
+  const artifacts = ARTIFACT_LETTERS.length * 2 - 1;
+  return widths.id + 2 + artifacts + 2 + BAR_WIDTH + 2 + columnsText(version, others, widths).length + (marker === undefined ? 0 : 2 + marker.length);
 }
 
 /** `widths.label` is undefined when the Project has no Source labels, which drops the label and `+N` columns. */
-function ChangeLine({
-  version,
-  others,
-  widths,
-}: {
-  version: ChangeSummary;
-  others: number;
-  widths: { id: number; progress: number; label: number | undefined };
-}) {
+function ChangeLine({ version, others, widths }: { version: ChangeSummary; others: number; widths: Widths }) {
   const { done, total } = version.tasks;
   // Floor, so the bar is only full when every task is done.
   const filled = total === 0 ? 0 : Math.floor((done / total) * BAR_WIDTH);
-  const columns =
-    widths.label === undefined
-      ? progressText(version)
-      : [progressText(version).padEnd(widths.progress), (version.source ?? "").padEnd(widths.label), others > 0 ? `+${others}` : ""]
-          .join("  ")
-          .trimEnd();
+  const columns = columnsText(version, others, widths);
   return (
     <Text>
       {version.id.padEnd(widths.id)}

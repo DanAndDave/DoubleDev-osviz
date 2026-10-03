@@ -28,10 +28,13 @@ export async function readCommitSource(cwd: string, rev: string, label: string, 
     files.set(changeDir.dir, entry);
   }
 
-  const withTasks = [...files.keys()].filter((dir) => files.get(dir)!.paths.includes("tasks.md"));
-  const contents = await readBlobs(cwd, withTasks.map((dir) => `${rev}:${changesPrefix}${dir}/tasks.md`));
+  // Every `proposal.md` and `tasks.md` in the tree, read in one batch.
+  const wanted = [...files.keys()].flatMap((dir) =>
+    ["proposal.md", "tasks.md"].filter((file) => files.get(dir)!.paths.includes(file)).map((file) => `${dir}/${file}`),
+  );
+  const contents = await readBlobs(cwd, wanted.map((path) => `${rev}:${changesPrefix}${path}`));
   if (contents.kind === "error") return contents;
-  const tasksOf = new Map(withTasks.map((dir, i) => [dir, contents.blobs[i]!]));
+  const blobOf = new Map(wanted.map((path, i) => [path, contents.blobs[i]!]));
 
   const committed = parseLog(log.stdout, changeDirOf);
   const versions: ChangeVersion[] = [];
@@ -40,11 +43,10 @@ export async function readCommitSource(cwd: string, rev: string, label: string, 
     // A path in a commit's tree was added by a commit reachable from it, so this means a damaged repository.
     if (changeTime === undefined) return { kind: "error", message: `no commit touches ${dir} in ${label}` };
     const artifacts = {
-      proposal: paths.includes("proposal.md"),
       specs: paths.some((p) => p.startsWith("specs/") && p.endsWith(".md")),
       design: paths.includes("design.md"),
     };
-    versions.push(changeSummary(changeDir, label, artifacts, tasksOf.get(dir), changeTime));
+    versions.push(changeSummary(changeDir, label, artifacts, blobOf.get(`${dir}/proposal.md`), blobOf.get(`${dir}/tasks.md`), changeTime));
   }
   return { kind: "ok", versions };
 }
