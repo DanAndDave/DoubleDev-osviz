@@ -27,7 +27,15 @@ osviz [path ...] [--base <ref>]
 ```
 
 - With no path, osviz shows the project in the current directory. A project is a directory containing an `openspec/` folder.
-- Several paths show several projects, in the order given, each under its own header.
+- To watch several projects in one dashboard, pass each project's path. They appear in the order given, each under a header showing the path as typed:
+
+  ```sh
+  osviz                                  # the project in the current directory
+  osviz ~/dev/app ~/dev/api ../tooling   # three projects in one dashboard
+  ```
+
+  osviz keeps no list of projects; name them on every run, or wrap the command in a shell alias.
+
 - `--base <ref>` sets the base branch for every project. Without it, the base is the local branch named by `origin/HEAD`, then `main`, then `master`, and otherwise whatever is checked out at the path.
 
 A project that cannot be read (missing path, no `openspec/` folder, unknown `--base` ref) shows an error row, and the dashboard keeps running. A bad command line prints usage and exits with status 2.
