@@ -102,7 +102,7 @@ A Change SHALL be Ready to archive when its Headline version is not archived and
 A row showing a Change version that is not archived and has at least one Blocked task SHALL end with the marker `blocked` in yellow, after the Source label and `+N`. A collapsed Change row SHALL show its Headline version's marker; an expanded Change version row SHALL show its own version's. A row showing an archived Change version SHALL show `archived` and not `blocked`. Blocked Changes SHALL be shown and ordered like any other Change.
 
 #### Scenario: Blocked task present
-- **WHEN** Change `add-auth`'s Headline version is active at 2 of 5 and one of its unticked tasks ends with ` — blocked`
+- **WHEN** Change `add-auth`'s Headline version is active at 2 of 5 and one of its unticked tasks has the status token `` — `blocked` ``
 - **THEN** its row shows `2/5` and ends with a yellow `blocked`
 
 #### Scenario: No blocked task
