@@ -7,7 +7,7 @@ import { findSources } from "./sources.ts";
 import { readWorktreeSource } from "./worktree.ts";
 
 export type { Artifacts, Change, ChangeSummary, ChangeVersion } from "./change.ts";
-export { isArchived, isReadyToArchive } from "./change.ts";
+export { isArchived, isBlocked, isReadyToArchive } from "./change.ts";
 
 /** `labelled` is false only for a Project outside git, whose single Source has no label. */
 export type ProjectSnapshot = { kind: "error"; message: string } | { kind: "ok"; changes: Change[]; labelled: boolean };

@@ -59,6 +59,11 @@ export function isReadyToArchive(change: Change): boolean {
   return headline?.kind === "change" && !headline.archived && headline.tasks.total > 0 && headline.tasks.done === headline.tasks.total;
 }
 
+/** Blocked: the Change version is readable, not archived, and has at least one Blocked task. */
+export function isBlocked(version: ChangeVersion): boolean {
+  return version.kind === "change" && !version.archived && version.sections.some((section) => section.tasks.some((task) => task.blocked));
+}
+
 /** A readable Change version; `proposalContent` and `tasksContent` are `undefined` when the file does not exist. */
 export function changeSummary(
   { dir, id, archived }: ChangeDir,

@@ -48,6 +48,10 @@ _Avoid_: completion, percent done
 One `##` heading of a Change version's `tasks.md` and the task checkboxes under it, with its own Task progress.
 _Avoid_: group, phase
 
+**Blocked task**:
+An unticked task checkbox whose text ends with ` — blocked` (em dash, lowercase). It counts toward Task progress like any other unticked task; a Change version with one is marked `blocked`. Decided from `tasks.md` alone: an `issues/` file's `status: blocked` is not read. It is unrelated to a proposal's `Blocked by:` line, which names other Changes.
+_Avoid_: stuck, on hold
+
 **Ready to archive**:
 A Change whose Headline version is not archived and has at least one task checkbox, all ticked. A Change with no task checkboxes is not Ready to archive, as `openspec list` reports it as "No tasks".
 _Avoid_: done, complete

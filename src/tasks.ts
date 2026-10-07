@@ -3,9 +3,13 @@ export interface TaskProgress {
   total: number;
 }
 
-/** One task checkbox: whether it is ticked, its leading whitespace length, and its text after the box. */
+/**
+ * One task checkbox: whether it is ticked, whether it is a Blocked task, its leading whitespace
+ * length, and its text after the box.
+ */
 export interface Task {
   done: boolean;
+  blocked: boolean;
   indent: number;
   text: string;
 }
@@ -25,6 +29,9 @@ const TASK_LINE = /^\s*[-*]\s*\[([\sxX])\]\s*(.*)/;
 /** A `##` heading; `###` and deeper do not match, so their tasks stay in the `##` section above. */
 const SECTION_HEADING = /^##\s+(.*)/;
 
+/** The ending that makes an unticked task a Blocked task: space, em dash (U+2014), space, `blocked`. */
+const BLOCKED_SUFFIX = / — blocked$/;
+
 /**
  * The Task sections of `content`, in file order: tasks before the first `##` heading form a section
  * without a heading, and every task line counted by `TASK_LINE` lands in exactly one section. Sections
@@ -35,7 +42,9 @@ export function parseTasks(content: string): TaskSection[] {
   for (const line of content.split("\n")) {
     const task = TASK_LINE.exec(line);
     if (task) {
-      sections.at(-1)!.tasks.push({ done: task[1] === "x" || task[1] === "X", indent: line.search(/\S/), text: task[2]!.trimEnd() });
+      const done = task[1] === "x" || task[1] === "X";
+      const text = task[2]!.trimEnd();
+      sections.at(-1)!.tasks.push({ done, blocked: !done && BLOCKED_SUFFIX.test(text), indent: line.search(/\S/), text });
       continue;
     }
     const heading = SECTION_HEADING.exec(line);

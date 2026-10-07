@@ -6,6 +6,7 @@ import {
   type ChangeSummary,
   type ChangeVersion,
   isArchived,
+  isBlocked,
   isReadyToArchive,
   type ProjectSnapshot,
 } from "../project/read.ts";
@@ -330,17 +331,23 @@ function rowsOf({ snapshots, expanded, showArchived }: Omit<State, "selected">):
   });
 }
 
-/** The marker ending a row, if any: `archived` on any archived version's row, `✓ ready to archive` on a Ready to archive Change's Headline row. */
-function markerOf(row: ChangeRow): "archived" | "✓ ready to archive" | undefined {
+/**
+ * The marker ending a row, if any: `archived` on any archived version's row, `✓ ready to archive` on a
+ * Ready to archive Change's Headline row, `blocked` on any row whose version has a Blocked task.
+ */
+function markerOf(row: ChangeRow): "archived" | "✓ ready to archive" | "blocked" | undefined {
   if (row.version.archived) return "archived";
   if (row.version === row.change.versions[0] && isReadyToArchive(row.change)) return "✓ ready to archive";
+  if (isBlocked(row.version)) return "blocked";
   return undefined;
 }
+
+const MARKER_COLOR = { "✓ ready to archive": "green", blocked: "yellow" } as const;
 
 function Marker({ row }: { row: ChangeRow }) {
   const marker = markerOf(row);
   if (marker === undefined) return null;
-  return <Text>{"  "}{marker === "archived" ? <Text dimColor>{marker}</Text> : <Text color="green">{marker}</Text>}</Text>;
+  return <Text>{"  "}{marker === "archived" ? <Text dimColor>{marker}</Text> : <Text color={MARKER_COLOR[marker]}>{marker}</Text>}</Text>;
 }
 
 interface Widths {

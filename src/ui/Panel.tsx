@@ -128,9 +128,16 @@ function Line({ line }: { line: PanelLine }) {
         <Text wrap="truncate-end">
           {"  "}
           {" ".repeat(line.task.indent)}
-          {line.task.done ? <Text color="green">✓</Text> : <Text dimColor>○</Text>}{" "}
+          <TaskSymbol task={line.task} />{" "}
           <Text dimColor={line.task.done}>{line.task.text}</Text>
         </Text>
       );
   }
+}
+
+/** Green `✓` when done, yellow `⊘` when blocked, else dimmed `○`. */
+function TaskSymbol({ task }: { task: Task }) {
+  if (task.done) return <Text color="green">✓</Text>;
+  if (task.blocked) return <Text color="yellow">⊘</Text>;
+  return <Text dimColor>○</Text>;
 }

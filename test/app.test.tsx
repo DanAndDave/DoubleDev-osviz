@@ -13,6 +13,7 @@ const fixture = useFixtures();
 const BOLD = (s: string) => `\u001B[1m${s}\u001B[22m`;
 const DIM = (s: string) => `\u001B[2m${s}\u001B[22m`;
 const GREEN = (s: string) => `\u001B[32m${s}\u001B[39m`;
+const YELLOW = (s: string) => `\u001B[33m${s}\u001B[39m`;
 
 /** Lets Ink finish its next frame; under fake timers, by advancing them 20ms. */
 async function settle(): Promise<void> {
@@ -469,6 +470,59 @@ describe("Ready to archive marker", () => {
       `add-auth  P S D T  ${"█".repeat(20)}  8/8  wt:wt-auth  ✓ ready to archive`,
       `add-auth  P S D T  ${"█".repeat(7)}${"░".repeat(13)}  3/8  main`,
     ]);
+  });
+});
+
+/** `done` ticked tasks, then `total - done` unticked ones of which the last is a Blocked task. */
+const BLOCKED_TASKS = (done: number, total: number) => `${TASKS(done, total - 1)}- [ ] t — blocked\n`;
+
+describe("Blocked marker", () => {
+  test("a Blocked task in the Headline version: the row ends with a yellow blocked marker", async () => {
+    const f = await fixture();
+    await f.write("openspec/changes/add-auth/tasks.md", BLOCKED_TASKS(2, 5));
+    const { lastFrame } = await show(f.root);
+    expect(listLines(lastFrame())).toEqual([`add-auth  P S D T  ${"█".repeat(8)}${"░".repeat(12)}  2/5  main  blocked`]);
+    expect(styledLine(lastFrame(), "add-auth")).toContain(YELLOW("blocked"));
+  });
+
+  test("no Blocked task: no blocked marker", async () => {
+    const f = await fixture();
+    await f.write("openspec/changes/add-auth/tasks.md", TASKS(2, 5));
+    const { lastFrame } = await show(f.root);
+    expect(listLines(lastFrame())).toEqual([`add-auth  P S D T  ${"█".repeat(8)}${"░".repeat(12)}  2/5  main`]);
+  });
+
+  test("Blocked only in an older version: collapsed row unmarked, expanded only that version's row marked", async () => {
+    const f = await fixture();
+    await f.write("openspec/changes/add-auth/tasks.md", BLOCKED_TASKS(1, 4));
+    await f.commit(sept(1));
+    const wt = await f.worktree("wt-auth", { branch: "add-auth" });
+    await wt.write("openspec/changes/add-auth/tasks.md", TASKS(2, 4), sept(5));
+    const app = await show(f.root);
+    expect(listLines(app.lastFrame())).toEqual([`add-auth  P S D T  ${"█".repeat(10)}${"░".repeat(10)}  2/4  wt:wt-auth  +1`]);
+    await press(app, ENTER);
+    expect(listLines(app.lastFrame())).toEqual([
+      `add-auth  P S D T  ${"█".repeat(10)}${"░".repeat(10)}  2/4  wt:wt-auth`,
+      `add-auth  P S D T  ${"█".repeat(5)}${"░".repeat(15)}  1/4  main  blocked`,
+    ]);
+  });
+
+  test("archived with a Blocked task: archived marker only", async () => {
+    const f = await fixture();
+    await f.write("openspec/changes/archive/2026-08-01-old-thing/tasks.md", BLOCKED_TASKS(1, 2));
+    const app = await show(f.root);
+    await press(app, "a");
+    expect(listLines(app.lastFrame())).toEqual([`old-thing  P S D T  ${"█".repeat(10)}${"░".repeat(10)}  1/2  main  archived`]);
+  });
+
+  test("a blocked Change keeps its place by Change time", async () => {
+    const f = await fixture();
+    await f.write("openspec/changes/free/tasks.md", TASKS(0, 1));
+    await f.commit(sept(1));
+    await f.write("openspec/changes/blocked-one/tasks.md", BLOCKED_TASKS(0, 1));
+    await f.commit(sept(5));
+    const { lastFrame } = await show(f.root);
+    expect(ids(lastFrame())).toEqual(["blocked-one", "free"]);
   });
 });
 
@@ -1353,6 +1407,14 @@ describe("Task lines", () => {
     expect(styledLine(lastFrame(), "1.2 Draw")).toContain(`${DIM("○")} 1.2 Draw panel`);
   });
 
+  test("a Blocked task: yellow ⊘ and its text undimmed, as written", async () => {
+    const f = await fixture();
+    await f.write("openspec/changes/a/tasks.md", "## 1. Read\n- [ ] 1.3 Wire the API — blocked\n");
+    const { lastFrame } = await show(f.root);
+    expect(panelLines(lastFrame())).toEqual(["a  main", "1. Read  0/1", "  ⊘ 1.3 Wire the API — blocked"]);
+    expect(styledLine(lastFrame(), "1.3 Wire")).toContain(`${YELLOW("⊘")} 1.3 Wire the API — blocked`);
+  });
+
   test("a nested task is indented as much more as in tasks.md", async () => {
     const f = await fixture();
     await f.write("openspec/changes/a/tasks.md", "- [ ] 1.2 top\n  - [ ] 1.2.1 nested\n");
@@ -1376,6 +1438,44 @@ describe("Task lines", () => {
     await f.write("openspec/changes/a/tasks.md", "- [ ] 1.1 a\n  More about 1.1.\n- [ ] 1.2 b\n");
     const { lastFrame } = await show(f.root);
     expect(panelLines(lastFrame())).toEqual(["a  main", "  ○ 1.1 a", "  ○ 1.2 b"]);
+  });
+});
+
+describe("Blocked tasks", () => {
+  test("trailing whitespace after — blocked is ignored", async () => {
+    const f = await fixture();
+    await f.write("openspec/changes/a/tasks.md", "- [ ] 2.1 Wire the API — blocked  \n");
+    const { lastFrame } = await show(f.root);
+    expect(panelLines(lastFrame())).toEqual(["a  main", "  ⊘ 2.1 Wire the API — blocked"]);
+  });
+
+  test("a ticked task is not blocked and counts as done", async () => {
+    const f = await fixture();
+    await f.write("openspec/changes/a/tasks.md", "- [x] 2.1 Wire the API — blocked\n");
+    const { lastFrame } = await show(f.root);
+    expect(panelLines(lastFrame())).toEqual(["a  main", "  ✓ 2.1 Wire the API — blocked"]);
+    expect(progress(lastFrame())).toEqual(["1/1"]);
+  });
+
+  test("hyphen, parentheses, capital B and a longer ending are not blocked", async () => {
+    const f = await fixture();
+    await f.write("openspec/changes/a/tasks.md", "- [ ] 2.1 a - blocked\n- [ ] 2.2 b (blocked)\n- [ ] 2.3 c — Blocked\n- [ ] 2.4 d — blocked by auth\n");
+    const { lastFrame } = await show(f.root);
+    expect(panelLines(lastFrame())).toEqual([
+      "a  main",
+      "  ○ 2.1 a - blocked",
+      "  ○ 2.2 b (blocked)",
+      "  ○ 2.3 c — Blocked",
+      "  ○ 2.4 d — blocked by auth",
+    ]);
+  });
+
+  test("issues/ with status: blocked does not make a task blocked", async () => {
+    const f = await fixture();
+    await f.write("openspec/changes/a/issues/01-api.md", "---\nstatus: blocked\n---\n# Wire the API\n");
+    await f.write("openspec/changes/a/tasks.md", "- [ ] 2.1 Wire the API\n");
+    const { lastFrame } = await show(f.root);
+    expect(panelLines(lastFrame())).toEqual(["a  main", "  ○ 2.1 Wire the API"]);
   });
 });
 
