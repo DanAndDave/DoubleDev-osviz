@@ -29,8 +29,12 @@ const TASK_LINE = /^\s*[-*]\s*\[([\sxX])\]\s*(.*)/;
 /** A `##` heading; `###` and deeper do not match, so their tasks stay in the `##` section above. */
 const SECTION_HEADING = /^##\s+(.*)/;
 
-/** The ending that makes an unticked task a Blocked task: space, em dash (U+2014), space, `blocked`. */
-const BLOCKED_SUFFIX = / — blocked$/;
+/**
+ * The status token that makes an unticked task a Blocked task, as `/triage` writes it after the issue
+ * link: space, em dash (U+2014), space, `blocked` between backticks, then a space (a note follows) or
+ * the end of the text.
+ */
+const BLOCKED_STATUS = / — `blocked`(?: |$)/;
 
 /**
  * The Task sections of `content`, in file order: tasks before the first `##` heading form a section
@@ -44,7 +48,7 @@ export function parseTasks(content: string): TaskSection[] {
     if (task) {
       const done = task[1] === "x" || task[1] === "X";
       const text = task[2]!.trimEnd();
-      sections.at(-1)!.tasks.push({ done, blocked: !done && BLOCKED_SUFFIX.test(text), indent: line.search(/\S/), text });
+      sections.at(-1)!.tasks.push({ done, blocked: !done && BLOCKED_STATUS.test(text), indent: line.search(/\S/), text });
       continue;
     }
     const heading = SECTION_HEADING.exec(line);

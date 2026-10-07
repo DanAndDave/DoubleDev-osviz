@@ -474,7 +474,7 @@ describe("Ready to archive marker", () => {
 });
 
 /** `done` ticked tasks, then `total - done` unticked ones of which the last is a Blocked task. */
-const BLOCKED_TASKS = (done: number, total: number) => `${TASKS(done, total - 1)}- [ ] t — blocked\n`;
+const BLOCKED_TASKS = (done: number, total: number) => `${TASKS(done, total - 1)}- [ ] t — \`blocked\`\n`;
 
 describe("Blocked marker", () => {
   test("a Blocked task in the Headline version: the row ends with a yellow blocked marker", async () => {
@@ -1409,10 +1409,10 @@ describe("Task lines", () => {
 
   test("a Blocked task: yellow ⊘ and its text undimmed, as written", async () => {
     const f = await fixture();
-    await f.write("openspec/changes/a/tasks.md", "## 1. Read\n- [ ] 1.3 Wire the API — blocked\n");
+    await f.write("openspec/changes/a/tasks.md", "## 1. Read\n- [ ] 1.3 Wire the API — `blocked` — waits on 57\n");
     const { lastFrame } = await show(f.root);
-    expect(panelLines(lastFrame())).toEqual(["a  main", "1. Read  0/1", "  ⊘ 1.3 Wire the API — blocked"]);
-    expect(styledLine(lastFrame(), "1.3 Wire")).toContain(`${YELLOW("⊘")} 1.3 Wire the API — blocked`);
+    expect(panelLines(lastFrame())).toEqual(["a  main", "1. Read  0/1", "  ⊘ 1.3 Wire the API — `blocked` — waits on 57"]);
+    expect(styledLine(lastFrame(), "1.3 Wire")).toContain(`${YELLOW("⊘")} 1.3 Wire the API — \`blocked\` — waits on 57`);
   });
 
   test("a nested task is indented as much more as in tasks.md", async () => {
@@ -1442,32 +1442,48 @@ describe("Task lines", () => {
 });
 
 describe("Blocked tasks", () => {
-  test("trailing whitespace after — blocked is ignored", async () => {
+  test("a status token at the end makes an unticked task blocked; it counts as open", async () => {
     const f = await fixture();
-    await f.write("openspec/changes/a/tasks.md", "- [ ] 2.1 Wire the API — blocked  \n");
+    await f.write("openspec/changes/a/tasks.md", "- [ ] [01 Confine the sandbox](issues/01-confine.md) — `blocked`\n");
     const { lastFrame } = await show(f.root);
-    expect(panelLines(lastFrame())).toEqual(["a  main", "  ⊘ 2.1 Wire the API — blocked"]);
+    expect(panelLines(lastFrame())).toEqual(["a  main", "  ⊘ [01 Confine the sandbox](issues/01-confine.md) — `blocked`"]);
+    expect(progress(lastFrame())).toEqual(["0/1"]);
+  });
+
+  test("a note after the status token keeps the task blocked", async () => {
+    const f = await fixture();
+    await f.write("openspec/changes/a/tasks.md", "- [ ] [03 Admit a worker tier](issues/03-admit.md) — `blocked` — the writing tier\n");
+    const { lastFrame } = await show(f.root);
+    expect(panelLines(lastFrame())).toEqual(["a  main", "  ⊘ [03 Admit a worker tier](issues/03-admit.md) — `blocked` — the writing tier"]);
+  });
+
+  test("trailing whitespace after the status token is ignored", async () => {
+    const f = await fixture();
+    await f.write("openspec/changes/a/tasks.md", "- [ ] 2.1 Wire the API — `blocked`  \n");
+    const { lastFrame } = await show(f.root);
+    expect(panelLines(lastFrame())).toEqual(["a  main", "  ⊘ 2.1 Wire the API — `blocked`"]);
   });
 
   test("a ticked task is not blocked and counts as done", async () => {
     const f = await fixture();
-    await f.write("openspec/changes/a/tasks.md", "- [x] 2.1 Wire the API — blocked\n");
+    await f.write("openspec/changes/a/tasks.md", "- [x] 2.1 Wire the API — `blocked`\n");
     const { lastFrame } = await show(f.root);
-    expect(panelLines(lastFrame())).toEqual(["a  main", "  ✓ 2.1 Wire the API — blocked"]);
+    expect(panelLines(lastFrame())).toEqual(["a  main", "  ✓ 2.1 Wire the API — `blocked`"]);
     expect(progress(lastFrame())).toEqual(["1/1"]);
   });
 
-  test("hyphen, parentheses, capital B and a longer ending are not blocked", async () => {
+  test("blocked as a dependency note after another status is not blocked", async () => {
     const f = await fixture();
-    await f.write("openspec/changes/a/tasks.md", "- [ ] 2.1 a - blocked\n- [ ] 2.2 b (blocked)\n- [ ] 2.3 c — Blocked\n- [ ] 2.4 d — blocked by auth\n");
+    await f.write("openspec/changes/a/tasks.md", "- [ ] [05 Correct the seams](issues/05-correct.md) — `ready-for-agent` — blocked by 04\n");
     const { lastFrame } = await show(f.root);
-    expect(panelLines(lastFrame())).toEqual([
-      "a  main",
-      "  ○ 2.1 a - blocked",
-      "  ○ 2.2 b (blocked)",
-      "  ○ 2.3 c — Blocked",
-      "  ○ 2.4 d — blocked by auth",
-    ]);
+    expect(panelLines(lastFrame())).toEqual(["a  main", "  ○ [05 Correct the seams](issues/05-correct.md) — `ready-for-agent` — blocked by 04"]);
+  });
+
+  test("plain word, hyphen, capital B and a glued period are not blocked", async () => {
+    const f = await fixture();
+    await f.write("openspec/changes/a/tasks.md", "- [ ] 2.1 a — blocked\n- [ ] 2.2 b - `blocked`\n- [ ] 2.3 c — `Blocked`\n- [ ] 2.4 d — `blocked`.\n");
+    const { lastFrame } = await show(f.root);
+    expect(panelLines(lastFrame())).toEqual(["a  main", "  ○ 2.1 a — blocked", "  ○ 2.2 b - `blocked`", "  ○ 2.3 c — `Blocked`", "  ○ 2.4 d — `blocked`."]);
   });
 
   test("issues/ with status: blocked does not make a task blocked", async () => {

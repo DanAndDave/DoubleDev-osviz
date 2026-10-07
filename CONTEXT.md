@@ -49,7 +49,7 @@ One `##` heading of a Change version's `tasks.md` and the task checkboxes under 
 _Avoid_: group, phase
 
 **Blocked task**:
-An unticked task checkbox whose text ends with ` — blocked` (em dash, lowercase). It counts toward Task progress like any other unticked task; a Change version with one is marked `blocked`. Decided from `tasks.md` alone: an `issues/` file's `status: blocked` is not read. It is unrelated to a proposal's `Blocked by:` line, which names other Changes.
+An unticked task checkbox whose text holds the status token `` — `blocked` `` (em dash, lowercase, in backticks) that `/triage` writes after the issue link, followed by a space and a note or by the end of the line. A `blocked by 04` note after another status is a dependency, not a Blocked task. It counts toward Task progress like any other unticked task; a Change version with one is marked `blocked`. Decided from `tasks.md` alone: an `issues/` file's `status: blocked` is not read. It is unrelated to a proposal's `Blocked by:` line, which names other Changes.
 _Avoid_: stuck, on hold
 
 **Ready to archive**:
