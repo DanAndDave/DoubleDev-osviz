@@ -12,7 +12,7 @@ osviz only reads. It never checks out, fetches, adds worktrees, or writes lock f
 ## Install
 
 ```sh
-git clone git@github.com:DanAndDave/DoubleDev-osviz.git
+git clone https://github.com/DanAndDave/DoubleDev-osviz.git
 cd DoubleDev-osviz
 bun install
 bun add -g "$PWD"
@@ -70,3 +70,7 @@ bun run typecheck  # tsc --noEmit
 - `CONTEXT.md` defines the domain vocabulary (Project, Base, Source, Change version, Headline version, and so on).
 - `openspec/specs/` is the behaviour specification; `docs/adr/` records the architectural decisions.
 - `docs/agents/workflow.md` describes how changes are planned and built.
+
+## License
+
+[MIT](LICENSE)
