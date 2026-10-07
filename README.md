@@ -44,7 +44,7 @@ A project that cannot be read (missing path, no `openspec/` folder, unknown `--b
 
 Each row is one change: its id, which planning documents exist (`P` proposal, `S` specs, `D` design, `T` tasks), a progress bar, and ticked over total task checkboxes, counted the way `openspec list` counts them. When a change exists in more than one place, the row shows the most recently changed copy, labelled with its branch or `wt:<worktree>`, and `+N` for the others. A change with every task ticked but not yet archived is marked `✓ ready to archive`.
 
-Beside or below the list, the detail panel shows the selected change's tasks grouped by `##` section in `tasks.md`, plus the `Blocked by:` and `Triage:` lines from its `proposal.md`.
+Beside or below the list, the detail panel shows the selected change's tasks grouped by `##` section in `tasks.md`, plus the `Blocked by:` and `Triage:` lines from its `proposal.md`. When the tasks do not fit, press `Tab` to focus the panel (its border turns cyan) and scroll it with `j`/`k`.
 
 Every project is re-read every 5 seconds.
 
@@ -52,7 +52,8 @@ Every project is re-read every 5 seconds.
 
 | Key | Action |
 | --- | --- |
-| `j` / `↓`, `k` / `↑` | Move the selection |
+| `j` / `↓`, `k` / `↑` | Move the selection; with the panel focused, scroll the panel |
+| `Tab` | Move focus between the list and the detail panel |
 | `Enter` | Expand a change into one row per branch or worktree, or collapse it |
 | `a` | Show or hide archived changes |
 | `r` | Re-read every project now |

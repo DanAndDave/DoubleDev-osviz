@@ -10,7 +10,7 @@ import {
   isReadyToArchive,
   type ProjectSnapshot,
 } from "../project/read.ts";
-import { Panel, type PanelSubject } from "./Panel.tsx";
+import { Panel, type PanelSubject, scrollLimit } from "./Panel.tsx";
 
 const BAR_WIDTH = 20;
 /** The list's narrowest width, and the panel's narrowest beside it, border included. */
@@ -62,20 +62,29 @@ interface RowKey {
 /**
  * What the dashboard shows and the user's place in it: each Project's last snapshot and expanded change
  * ids, by Project index. `selected` indexes a selectable row of `rowsOf(state)`, and is undefined when
- * there is none.
+ * there is none. `focus` says which side `j`/`k` act on; it is `"list"` whenever nothing is selected.
+ * `scroll` is how many lines the panel is scrolled down; after a refresh or resize it may exceed how
+ * far the panel can scroll, and is clamped where it is drawn.
  */
 interface State {
   snapshots: readonly ProjectSnapshot[];
   expanded: readonly ReadonlySet<string>[];
   showArchived: boolean;
   selected: number | undefined;
+  focus: "list" | "panel";
+  scroll: number;
 }
 
-/** What can happen to the dashboard: a key press, or a read of a Project finishing. */
+/**
+ * What can happen to the dashboard: a key press, or a read of a Project finishing. `scroll` moves the
+ * panel `by` lines, keeping it within the `limit` it was last drawn with.
+ */
 type Action =
   | { type: "move"; by: 1 | -1 }
+  | { type: "scroll"; by: 1 | -1; limit: number }
   | { type: "toggleExpanded" }
   | { type: "toggleArchived" }
+  | { type: "toggleFocus" }
   | { type: "refreshed"; project: number; snapshot: ProjectSnapshot };
 
 /** A Project the dashboard shows: its path as typed, its first snapshot, and how to read it again. */
@@ -93,9 +102,9 @@ export interface ProjectInput {
 export function App({ projects }: { projects: readonly ProjectInput[] }) {
   const [state, dispatch] = useReducer(reduce, projects, (projects) => {
     const initial = { snapshots: projects.map((p) => p.initial), expanded: projects.map(() => new Set<string>()), showArchived: false };
-    return { ...initial, selected: firstSelectable(rowsOf(initial)) };
+    return { ...initial, selected: firstSelectable(rowsOf(initial)), focus: "list" as const, scroll: 0 };
   });
-  const { snapshots, selected } = state;
+  const { snapshots, selected, focus, scroll } = state;
   const rows = rowsOf(state);
   const { exit } = useApp();
   const { columns: terminalColumns, rows: terminalRows } = useWindowSize();
@@ -117,14 +126,6 @@ export function App({ projects }: { projects: readonly ProjectInput[] }) {
     const interval = setInterval(refresh, REFRESH_MS);
     return () => clearInterval(interval);
   }, []);
-  useInput((input, key) => {
-    if (input === "q") exit();
-    if (input === "j" || key.downArrow) dispatch({ type: "move", by: 1 });
-    if (input === "k" || key.upArrow) dispatch({ type: "move", by: -1 });
-    if (key.return) dispatch({ type: "toggleExpanded" });
-    if (input === "a") dispatch({ type: "toggleArchived" });
-    if (input === "r") refresh();
-  });
 
   const changeRows = rows.filter((row) => row.kind === "change");
   const summaries = changeRows.flatMap((row) => (row.version.kind === "change" ? [row.version] : []));
@@ -148,6 +149,20 @@ export function App({ projects }: { projects: readonly ProjectInput[] }) {
   const shown = rows.slice(top, top + listHeight);
   // Below the list, the panel gets the rows the list and its border leave, but always room for its first line and a cut line.
   const panelHeight = Math.max(beside ? terminalRows : terminalRows - shown.length - 1, 2);
+  const subject = isSelectable(selectedRow) ? panelSubject(selectedRow, projects[selectedRow.project]!.label, snapshots) : undefined;
+  const limit = subject === undefined ? 0 : scrollLimit(subject, panelHeight);
+  // Runs on a key press after this render, so `focus` and `limit` are the dashboard as last drawn.
+  const moveBy = (by: 1 | -1) => dispatch(focus === "list" ? { type: "move", by } : { type: "scroll", by, limit });
+  useInput((input, key) => {
+    if (input === "q") exit();
+    if (input === "j" || key.downArrow) moveBy(1);
+    if (input === "k" || key.upArrow) moveBy(-1);
+    if (key.return) dispatch({ type: "toggleExpanded" });
+    if (key.tab) dispatch({ type: "toggleFocus" });
+    if (input === "a") dispatch({ type: "toggleArchived" });
+    if (input === "r") refresh();
+  });
+
   return (
     <Box width={terminalColumns} flexDirection={beside ? "row" : "column"}>
       <Box flexDirection="column" flexShrink={0} width={listWidth}>
@@ -155,7 +170,7 @@ export function App({ projects }: { projects: readonly ProjectInput[] }) {
           <RowLine key={top + i} row={row} label={projects[row.project]!.label} widths={widths} selected={top + i === selected} />
         ))}
       </Box>
-      {isSelectable(selectedRow) && <Panel subject={panelSubject(selectedRow, projects[selectedRow.project]!.label, snapshots)} beside={beside} height={panelHeight} />}
+      {subject !== undefined && <Panel subject={subject} beside={beside} height={panelHeight} scroll={Math.min(scroll, limit)} focused={focus === "panel"} />}
     </Box>
   );
 }
@@ -228,16 +243,37 @@ function RowLine({ row, label, widths, selected }: { row: Row; label: string; wi
 
 /**
  * Applies `action` and picks the selected row in the same step, by the selected row's key, so the
- * rows and the selection they imply never render separately.
+ * rows and the selection they imply never render separately. Whenever another row ends up selected,
+ * the panel returns to its top; when none is, Focus returns to the list.
  */
 function reduce(state: State, action: Action): State {
+  const next = apply(state, action);
+  if (next === state) return state;
+  const before = keyAt(rowsOf(state), state.selected);
+  const sameRow = before !== undefined && sameKey(before, keyAt(rowsOf(next), next.selected));
+  return { ...next, scroll: sameRow ? next.scroll : 0, focus: next.selected === undefined ? "list" : next.focus };
+}
+
+/** The key of row `selected` of `rows`; undefined when nothing is selected. */
+function keyAt(rows: readonly Row[], selected: number | undefined): RowKey | undefined {
+  const row = selected === undefined ? undefined : rows[selected];
+  return isSelectable(row) ? row.key : undefined;
+}
+
+/** `reduce` before its rules that hold for every action. */
+function apply(state: State, action: Action): State {
   const rows = rowsOf(state);
   const row = state.selected === undefined ? undefined : rows[state.selected];
-  const key = isSelectable(row) ? row.key : undefined;
+  const key = keyAt(rows, state.selected);
   switch (action.type) {
     case "move":
       if (state.selected === undefined) return state;
       return { ...state, selected: step(rows, state.selected, action.by) ?? state.selected };
+    case "scroll":
+      return { ...state, scroll: Math.min(Math.max(Math.min(state.scroll, action.limit) + action.by, 0), action.limit) };
+    case "toggleFocus":
+      if (state.selected === undefined) return state;
+      return { ...state, focus: state.focus === "list" ? "panel" : "list" };
     case "toggleExpanded": {
       if (row?.kind !== "change") return state;
       const { project, id } = row.key;
@@ -305,7 +341,7 @@ function sameKey(a: RowKey, b: RowKey | undefined): boolean {
  * error row, its `No active changes` row, or its Change rows. Archived Changes only when shown; one row
  * per Change, or one per version when expanded.
  */
-function rowsOf({ snapshots, expanded, showArchived }: Omit<State, "selected">): Row[] {
+function rowsOf({ snapshots, expanded, showArchived }: Pick<State, "snapshots" | "expanded" | "showArchived">): Row[] {
   return snapshots.flatMap((snapshot, project): Row[] => {
     const header: Row[] = snapshots.length > 1 ? [{ kind: "header", project }] : [];
     if (snapshot.kind !== "ok") {

@@ -59,3 +59,7 @@ _Avoid_: done, complete
 **Detail panel**:
 What is shown about the selected row: for a Change row, its Change version's Task sections and its blocking and triage lines; for a Project that cannot be read, its path and the full error.
 _Avoid_: sidebar, inspector, preview
+
+**Focus**:
+Which side of the dashboard the movement keys act on: the list, where they move the selection, or the Detail panel, where they scroll it. `Tab` moves it; it is on the list whenever no row is selected.
+_Avoid_: active pane, mode

@@ -137,6 +137,8 @@ const INVERSE = "\u001B[7m";
 const DOWN = "\u001B[B";
 const UP = "\u001B[A";
 const ENTER = "\r";
+const TAB = "\t";
+const CYAN = "\u001B[36m";
 
 /** The list rows drawn in inverse video, styling removed. */
 function selectedLines(frame: string | undefined): string[] {
@@ -1584,21 +1586,114 @@ describe("Panel placement", () => {
   });
 });
 
-describe("Fitting the panel's height", () => {
-  /** `## <heading>` with `done` ticked tasks of `total`, numbered `<n>.1` onwards. */
-  const section = (heading: string, done: number, total: number) => {
-    const n = heading.split(".")[0];
-    const tasks = Array.from({ length: total }, (_, i) => `- [${i < done ? "x" : " "}] ${n}.${i + 1}\n`);
-    return `## ${heading}\n${tasks.join("")}`;
-  };
+/** Whether the panel's border is drawn in cyan, beside or below the list. */
+function panelFocused(frame: string | undefined): boolean {
+  return [`${CYAN}│`, `${CYAN}─`].some((border) => (frame ?? "").includes(border));
+}
 
-  /** Change `a` on `main` with `tasks` as its `tasks.md`, shown in a terminal of `size`. */
-  async function showTasks(tasks: string, size: Size) {
+describe("Panel focus", () => {
+  /** Changes `a` (newest, with one open task) and `b`. */
+  async function twoChanges() {
     const f = await fixture();
-    await f.write("openspec/changes/a/tasks.md", tasks);
-    return show(f.root, size);
+    await f.write("openspec/changes/a/tasks.md", "- [ ] 1.1\n", sept(2));
+    await f.write("openspec/changes/b/tasks.md", "- [ ] 1.1\n", sept(1));
+    return show(f.root);
   }
 
+  test("starts on the list: the panel's border is not cyan", async () => {
+    const app = await twoChanges();
+    expect(placement(app.lastFrame())).toBe("beside");
+    expect(panelFocused(app.lastFrame())).toBe(false);
+  });
+
+  test("Tab moves Focus to the panel, drawing its border cyan, and back", async () => {
+    const app = await twoChanges();
+    await press(app, TAB);
+    expect(panelFocused(app.lastFrame())).toBe(true);
+    await press(app, TAB);
+    expect(panelFocused(app.lastFrame())).toBe(false);
+  });
+
+  test("a panel below the list is drawn cyan too", async () => {
+    const app = await twoChanges();
+    await resize(app, { columns: 60, rows: 20 });
+    await press(app, TAB);
+    expect(placement(app.lastFrame())).toBe("below");
+    expect(panelFocused(app.lastFrame())).toBe(true);
+  });
+
+  test("no panel: Tab changes nothing", async () => {
+    const app = await show((await noActiveChanges()).root);
+    const before = app.lastFrame();
+    await press(app, TAB);
+    expect(app.lastFrame()).toBe(before);
+    expect(placement(app.lastFrame())).toBe("none");
+  });
+
+  test("j and k leave the selection alone while the panel has Focus", async () => {
+    const app = await twoChanges();
+    await press(app, TAB, "j", DOWN);
+    expect(selected(app.lastFrame())).toEqual(["a"]);
+    await press(app, TAB, "j");
+    expect(selected(app.lastFrame())).toEqual(["b"]);
+    await press(app, TAB, "k", UP);
+    expect(selected(app.lastFrame())).toEqual(["b"]);
+  });
+
+  test("a and r act as before while the panel has Focus", async () => {
+    const f = await fixture();
+    await f.write("openspec/changes/a/tasks.md", "- [ ] 1.1\n", sept(2));
+    await f.write("openspec/changes/archive/2026-09-01-old/proposal.md", "", sept(1));
+    const app = await show(f.root);
+    await press(app, TAB, "a");
+    expect(ids(app.lastFrame())).toEqual(["a", "old"]);
+    await f.write("openspec/changes/a/tasks.md", "- [x] 1.1\n", sept(3));
+    await refresh(app);
+    expect(progress(app.lastFrame())).toEqual(["1/1", "0/0"]);
+    expect(panelFocused(app.lastFrame())).toBe(true);
+  });
+
+  test("Enter expands the selected Change while the panel has Focus", async () => {
+    const f = await fixture();
+    await f.write("openspec/changes/add-auth/tasks.md", TASKS(3, 8));
+    await f.commit(sept(1));
+    const wt = await f.worktree("wt-auth", { branch: "add-auth" });
+    await wt.write("openspec/changes/add-auth/tasks.md", TASKS(8, 8), sept(5));
+    const app = await show(f.root);
+    await press(app, TAB, ENTER);
+    expect(ids(app.lastFrame())).toEqual(["add-auth", "add-auth"]);
+    expect(panelFocused(app.lastFrame())).toBe(true);
+  });
+
+  test("Focus returns to the list when the panel goes away", async () => {
+    const f = await fixture();
+    await f.write("openspec/changes/a/tasks.md", "- [ ] 1.1\n", sept(2));
+    const app = await show(f.root);
+    await press(app, TAB);
+    await rm(join(f.root, "openspec/changes/a"), { recursive: true });
+    await refresh(app);
+    expect(placement(app.lastFrame())).toBe("none");
+    await f.write("openspec/changes/b/tasks.md", "- [ ] 1.1\n", sept(3));
+    await refresh(app);
+    expect(panelFocused(app.lastFrame())).toBe(false);
+  });
+});
+
+/** `## <heading>` with `done` ticked tasks of `total`, numbered `<n>.1` onwards. */
+function section(heading: string, done: number, total: number): string {
+  const n = heading.split(".")[0];
+  const tasks = Array.from({ length: total }, (_, i) => `- [${i < done ? "x" : " "}] ${n}.${i + 1}\n`);
+  return `## ${heading}\n${tasks.join("")}`;
+}
+
+/** Change `a` on `main` with `tasks` as its `tasks.md`, shown in a terminal of `size`. */
+async function showTasks(tasks: string, size: Size) {
+  const f = await fixture();
+  await f.write("openspec/changes/a/tasks.md", tasks);
+  return { ...(await show(f.root, size)), f };
+}
+
+describe("Fitting the panel's height", () => {
   test("a short tasks file is shown in full", async () => {
     const app = await showTasks(section("1. Read", 3, 3) + section("2. Draw", 0, 3), { columns: 200, rows: 20 });
     expect(panelLines(app.lastFrame())).toEqual([
@@ -1663,5 +1758,105 @@ describe("Fitting the panel's height", () => {
     expect(panelLines(app.lastFrame())).toHaveLength(14);
     await resize(app, { columns: 200, rows: 8 });
     expect(panelLines(app.lastFrame())).toEqual(["a  main", "1. Read  ✓ 3/3", "2. Draw  0/8", "  ○ 2.1", "  ○ 2.2", "  ○ 2.3", "  ○ 2.4", "… 4 more"]);
+  });
+});
+
+describe("Scrolling the panel", () => {
+  const READ_AND_DRAW = section("1. Read", 3, 3) + section("2. Draw", 0, 8);
+  const AT_TOP = ["a  main", "1. Read  ✓ 3/3", "2. Draw  0/8", "  ○ 2.1", "  ○ 2.2", "  ○ 2.3", "  ○ 2.4", "… 4 more"];
+  const AT_END = ["a  main", "… 5 above", "  ○ 2.3", "  ○ 2.4", "  ○ 2.5", "  ○ 2.6", "  ○ 2.7", "  ○ 2.8"];
+
+  test("j with the panel focused scrolls one line down, keeping the first line", async () => {
+    const app = await showTasks(READ_AND_DRAW, { columns: 200, rows: 8 });
+    await press(app, TAB, "j");
+    expect(panelLines(app.lastFrame())).toEqual(["a  main", "… 3 above", "  ○ 2.1", "  ○ 2.2", "  ○ 2.3", "  ○ 2.4", "  ○ 2.5", "… 3 more"]);
+    expect(styledLine(app.lastFrame(), "… 3 above")).toContain(DIM("… 3 above"));
+  });
+
+  test("the down arrow scrolls until the last line is shown, then stops", async () => {
+    const app = await showTasks(READ_AND_DRAW, { columns: 200, rows: 8 });
+    await press(app, TAB, DOWN, DOWN, DOWN);
+    expect(panelLines(app.lastFrame())).toEqual(AT_END);
+    await press(app, "j");
+    expect(panelLines(app.lastFrame())).toEqual(AT_END);
+  });
+
+  test("k and the up arrow scroll back to the top, then stop", async () => {
+    const app = await showTasks(READ_AND_DRAW, { columns: 200, rows: 8 });
+    await press(app, TAB, "j", "j", "j", "k", UP, "k");
+    expect(panelLines(app.lastFrame())).toEqual(AT_TOP);
+    await press(app, "k");
+    expect(panelLines(app.lastFrame())).toEqual(AT_TOP);
+  });
+
+  test("… N above counts the tasks it hides", async () => {
+    const app = await showTasks(section("1. Draw", 0, 8), { columns: 200, rows: 6 });
+    await press(app, TAB, "j");
+    expect(panelLines(app.lastFrame())).toEqual(["a  main", "… 1 above", "  ○ 1.2", "  ○ 1.3", "  ○ 1.4", "… 4 more"]);
+  });
+
+  test("lines above holding no task: … alone", async () => {
+    const f = await fixture();
+    await f.write("openspec/changes/a/proposal.md", "Blocked by: b\nTriage: ready-for-human\n");
+    await f.write("openspec/changes/a/tasks.md", "- [ ] 1\n- [ ] 2\n- [ ] 3\n- [ ] 4\n");
+    const app = await show(f.root, { columns: 200, rows: 5 });
+    await press(app, TAB, "j");
+    expect(panelLines(app.lastFrame())).toEqual(["a  main", "…", "  ○ 1", "  ○ 2", "… 2 more"]);
+  });
+
+  test("a panel whose lines fit does not scroll", async () => {
+    const app = await showTasks(section("1. Read", 3, 3) + section("2. Draw", 0, 3), { columns: 200, rows: 20 });
+    const before = panelLines(app.lastFrame());
+    await press(app, TAB, "j");
+    expect(panelLines(app.lastFrame())).toEqual(before);
+  });
+
+  test("a panel with fewer than three rows below its first line does not scroll", async () => {
+    const app = await showTasks(section("1. Draw", 0, 8), { columns: 200, rows: 3 });
+    await press(app, TAB, "j");
+    expect(panelLines(app.lastFrame())).toEqual(["a  main", "1. Draw  0/8", "… 8 more"]);
+  });
+
+  test("selecting another row returns the panel to its top", async () => {
+    const f = await fixture();
+    await f.write("openspec/changes/a/tasks.md", READ_AND_DRAW, sept(2));
+    await f.write("openspec/changes/b/tasks.md", "- [ ] 1\n", sept(1));
+    const app = await show(f.root, { columns: 200, rows: 8 });
+    await press(app, TAB, "j", "j", TAB, "j", "k", TAB);
+    expect(selected(app.lastFrame())).toEqual(["a"]);
+    expect(panelLines(app.lastFrame())).toEqual(AT_TOP);
+  });
+
+  test("a refresh keeps the scroll position", async () => {
+    const app = await showTasks(READ_AND_DRAW, { columns: 200, rows: 8 });
+    await press(app, TAB, "j");
+    await app.f.write("openspec/changes/a/tasks.md", READ_AND_DRAW.replace("- [ ] 2.1", "- [x] 2.1"));
+    await refresh(app);
+    expect(panelLines(app.lastFrame())).toEqual(["a  main", "… 3 above", "  ✓ 2.1", "  ○ 2.2", "  ○ 2.3", "  ○ 2.4", "  ○ 2.5", "… 3 more"]);
+  });
+
+  test("fewer lines after a refresh: the panel shows its last lines, and k scrolls up from there", async () => {
+    const app = await showTasks(READ_AND_DRAW, { columns: 200, rows: 8 });
+    await press(app, TAB, "j", "j", "j");
+    await app.f.write("openspec/changes/a/tasks.md", section("1. Read", 3, 3) + section("2. Draw", 0, 7));
+    await refresh(app);
+    expect(panelLines(app.lastFrame())).toEqual(["a  main", "… 4 above", "  ○ 2.2", "  ○ 2.3", "  ○ 2.4", "  ○ 2.5", "  ○ 2.6", "  ○ 2.7"]);
+    await press(app, "k");
+    expect(panelLines(app.lastFrame())).toEqual(["a  main", "… 3 above", "  ○ 2.1", "  ○ 2.2", "  ○ 2.3", "  ○ 2.4", "  ○ 2.5", "… 2 more"]);
+  });
+
+  test("a terminal made tall enough shows every line without a key", async () => {
+    const app = await showTasks(READ_AND_DRAW, { columns: 200, rows: 8 });
+    await press(app, TAB, "j", "j", "j");
+    await resize(app, { columns: 200, rows: 20 });
+    expect(panelLines(app.lastFrame())).toEqual(["a  main", "1. Read  ✓ 3/3", ...Array.from({ length: 3 }, (_, i) => `  ✓ 1.${i + 1}`), "2. Draw  0/8", ...Array.from({ length: 8 }, (_, i) => `  ○ 2.${i + 1}`)]);
+  });
+
+  test("an error panel does not scroll", async () => {
+    const gone = await fixture({ git: false });
+    const app = await show(gone.root, { columns: 70, rows: 4 });
+    const before = panelLines(app.lastFrame());
+    await press(app, TAB, "j");
+    expect(panelLines(app.lastFrame())).toEqual(before);
   });
 });

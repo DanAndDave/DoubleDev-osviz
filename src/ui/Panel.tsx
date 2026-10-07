@@ -16,23 +16,26 @@ type PanelLine =
 export type PanelSubject = { kind: "version"; version: ChangeVersion; labelled: boolean } | { kind: "project"; label: string; message: string };
 
 /**
- * The Detail panel for `subject`, in `height` rows. `beside` puts the panel's border on its left, for a
- * panel right of the list, rather than on top, for one below it. The border takes no row of `height`.
+ * The Detail panel for `subject`, in `height` rows, scrolled down `scroll` lines (clamped to
+ * `scrollLimit`). `beside` puts the panel's border on its left, for a panel right of the list, rather
+ * than on top, for one below it. The border takes no row of `height`, and is cyan while the panel is
+ * `focused`.
  */
-export function Panel({ subject, beside, height }: { subject: PanelSubject; beside: boolean; height: number }) {
+export function Panel({ subject, beside, height, scroll, focused }: { subject: PanelSubject; beside: boolean; height: number; scroll: number; focused: boolean }) {
   return (
     <Box
       flexDirection="column"
       flexGrow={1}
       height={beside ? height : height + 1}
       borderStyle="single"
+      borderColor={focused ? "cyan" : undefined}
       borderTop={!beside}
       borderLeft={beside}
       borderRight={false}
       borderBottom={false}
       paddingLeft={1}
     >
-      {fitPanel(subject, height).map((line, i) => (
+      {windowOf(collapse(subject, height), height, scroll).map((line, i) => (
         <Line key={i} line={line} />
       ))}
     </Box>
@@ -40,13 +43,49 @@ export function Panel({ subject, beside, height }: { subject: PanelSubject; besi
 }
 
 /**
- * The panel's lines for `subject`, at most `height` (at least 2) of them. When every line does not
- * fit, finished Task sections collapse to their heading line from the top, one at a time, until they
- * do; if they still do not, the lines are cut and end with `… N more`, N counting the tasks cut. An
- * error's message, a Change version's or a Project's, is not fitted: it wraps, and there are no tasks
- * to cut.
+ * How far the panel for `subject` in `height` rows can scroll: the lines left after collapsing beyond
+ * `height`. 0 when they fit, for an error panel, and with fewer than three rows below the first line,
+ * which leaves no room between `… N above` and `… N more`.
  */
-function fitPanel(subject: PanelSubject, height: number): PanelLine[] {
+export function scrollLimit(subject: PanelSubject, height: number): number {
+  return limitOf(collapse(subject, height), height);
+}
+
+/** `scrollLimit` of the collapsed `lines`. */
+function limitOf(lines: readonly PanelLine[], height: number): number {
+  if (height - 1 < 3 || lines.some((line) => line.kind === "error")) return 0;
+  return Math.max(lines.length - height, 0);
+}
+
+/**
+ * The collapsed `lines` that show in `height` (at least 2) rows, scrolled down `scroll` lines. The
+ * first line always shows; scrolled down, the line after it reads `… N above`, N counting the tasks of
+ * the lines it hides. While lines remain below, the last line reads `… N more`, N counting the tasks
+ * cut. An error's message is not fitted: it wraps, and there are no tasks to cut.
+ */
+function windowOf(lines: readonly PanelLine[], height: number, scroll: number): readonly PanelLine[] {
+  const [first, ...body] = lines;
+  const rows = height - 1;
+  if (body.length <= rows) return lines;
+  const s = Math.min(Math.max(scroll, 0), limitOf(lines, height));
+  const above: PanelLine[] = s === 0 ? [] : [elided(body.slice(0, s + 1), "above")];
+  const rest = body.slice(s === 0 ? 0 : s + 1);
+  const room = rows - above.length;
+  if (rest.length <= room) return [first!, ...above, ...rest];
+  return [first!, ...above, ...rest.slice(0, room - 1), elided(rest.slice(room - 1), "more")];
+}
+
+/** The dim line standing in for the `hidden` lines: `… N <where>`, or `…` alone when they hold no task. */
+function elided(hidden: readonly PanelLine[], where: "above" | "more"): PanelLine {
+  const n = hidden.reduce((sum, line) => sum + tasksIn(line), 0);
+  return { kind: "text", text: n === 0 ? "…" : `… ${n} ${where}`, dim: true };
+}
+
+/**
+ * The panel's lines for `subject`, uncut. When they do not all fit `height`, finished Task sections
+ * collapse to their heading line from the top, one at a time, until they do or none is left.
+ */
+function collapse(subject: PanelSubject, height: number): PanelLine[] {
   if (subject.kind === "project") return errorLines(subject.label, subject.message);
   const { version, labelled } = subject;
   const title = labelled ? `${version.id}  ${version.source ?? ""}` : version.id;
@@ -67,11 +106,7 @@ function fitPanel(subject: PanelSubject, height: number): PanelLine[] {
     collapsed.add(section);
     lines = build();
   }
-  if (lines.length <= height) return lines;
-
-  const kept = lines.slice(0, height - 1);
-  const cut = lines.slice(height - 1).reduce((n, line) => n + tasksIn(line), 0);
-  return [...kept, { kind: "text", text: cut === 0 ? "…" : `… ${cut} more`, dim: true }];
+  return lines;
 }
 
 /** An error's panel: `title` in bold, then the full message, which wraps. */
