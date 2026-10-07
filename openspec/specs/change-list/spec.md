@@ -122,7 +122,7 @@ A row showing a Change version that is not archived and has at least one Blocked
 - **THEN** `blocked-one` is shown above `free`
 
 ### Requirement: Selection
-Change rows, Change version rows of an expanded Change, and Project error rows SHALL be selectable; header rows and rows saying there are no active changes SHALL NOT. The dashboard SHALL highlight exactly one selected row when at least one selectable row exists, starting with the first selectable row, and none otherwise. `j` and the down arrow SHALL move the selection to the next selectable row below; `k` and the up arrow SHALL move it to the next selectable row above, skipping rows that cannot be selected, across Project boundaries. The selection SHALL NOT move past the first or last selectable row.
+Change rows, Change version rows of an expanded Change, and Project error rows SHALL be selectable; header rows and rows saying there are no active changes SHALL NOT. The dashboard SHALL highlight exactly one selected row when at least one selectable row exists, starting with the first selectable row, and none otherwise. While the list has Focus (see the detail-panel capability's Panel focus requirement), `j` and the down arrow SHALL move the selection to the next selectable row below; `k` and the up arrow SHALL move it to the next selectable row above, skipping rows that cannot be selected, across Project boundaries. The selection SHALL NOT move past the first or last selectable row.
 
 #### Scenario: Move down
 - **WHEN** the first of three rows is selected and the user presses `j`
