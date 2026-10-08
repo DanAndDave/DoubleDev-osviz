@@ -122,7 +122,25 @@ A row showing a Change version that is not archived and has at least one Blocked
 - **THEN** `blocked-one` is shown above `free`
 
 ### Requirement: Selection
-Change rows, Change version rows of an expanded Change, and Project error rows SHALL be selectable; header rows and rows saying there are no active changes SHALL NOT. The dashboard SHALL highlight exactly one selected row when at least one selectable row exists, starting with the first selectable row, and none otherwise. While the list has Focus (see the detail-panel capability's Panel focus requirement), `j` and the down arrow SHALL move the selection to the next selectable row below; `k` and the up arrow SHALL move it to the next selectable row above, skipping rows that cannot be selected, across Project boundaries. The selection SHALL NOT move past the first or last selectable row.
+Change rows, Change version rows of an expanded Change, and Project error rows SHALL be selectable; header rows and rows saying there are no active changes SHALL NOT. The dashboard SHALL mark exactly one selected row when at least one selectable row exists, starting with the first selectable row, and none otherwise. While the list has Focus (see the detail-panel capability's Panel focus requirement), `j` and the down arrow SHALL move the selection to the next selectable row below; `k` and the up arrow SHALL move it to the next selectable row above, skipping rows that cannot be selected, across Project boundaries. The selection SHALL NOT move past the first or last selectable row.
+
+Every row but a header row SHALL start with a two-column marker column, before the contents the other requirements describe: `> ` on the selected row and two spaces on every other row. Header rows SHALL start in the list's first column, with no marker column. The marker column SHALL count toward a row's width. The selected row SHALL otherwise be drawn exactly as when it is not selected, with no highlighting. While the list has Focus, the selected row's `>` SHALL be drawn at normal intensity; while the panel has Focus, it SHALL be drawn dimmed.
+
+#### Scenario: Selected row marked
+- **WHEN** Changes `a` and `b` are shown and `a` is selected
+- **THEN** `a`'s row starts with `> `, `b`'s row starts with two spaces, and neither row is highlighted
+
+#### Scenario: Marker follows the selection
+- **WHEN** Changes `a` and `b` are shown, `a` is selected, and the user presses `j`
+- **THEN** `b`'s row starts with `> ` and `a`'s row starts with two spaces
+
+#### Scenario: Headers are not indented
+- **WHEN** Projects `../web` and `../api` are shown
+- **THEN** each header row starts with its path in the list's first column, and each Change row and `No active changes` row starts with the marker column
+
+#### Scenario: Marker dimmed while the panel has Focus
+- **WHEN** Change `a` is selected and the user presses `Tab`
+- **THEN** `a`'s row still starts with `> `, with the `>` dimmed, and pressing `Tab` again draws it at normal intensity
 
 #### Scenario: Move down
 - **WHEN** the first of three rows is selected and the user presses `j`
@@ -154,7 +172,7 @@ Change rows, Change version rows of an expanded Change, and Project error rows S
 
 #### Scenario: Nothing to select
 - **WHEN** every shown Project has no active Changes
-- **THEN** no row is highlighted
+- **THEN** no row starts with `> `
 
 ### Requirement: Error rows
 When a Project cannot be read, the dashboard SHALL show a single error row describing the problem in place of that Project's Change rows, under its header when there is one, and SHALL show the other Projects normally. When a Change version's `tasks.md` or `proposal.md` exists but cannot be read, that Change version SHALL be shown as an error row naming the change id, the Source label and the problem, wherever that Change version would be shown; the Headline version SHALL be chosen among the Change's readable versions, and a Change with no readable version SHALL be shown as its error row. Other Changes SHALL be shown normally. A Project's error row and a Change version's error row SHALL each take one line no wider than the list: a longer problem description SHALL be cut short and end with `…`.
@@ -228,7 +246,6 @@ When two or more Projects are shown, the dashboard SHALL show each Project's row
 #### Scenario: Columns line up across Projects
 - **WHEN** `../web` has Change `a` at `10/12` and `../api` has Change `rate-limit` at `1/2`
 - **THEN** the artifact letters and progress bars of both rows start at the same column
-
 
 ### Requirement: List scrolling
 The list SHALL have the terminal's height, minus three rows when the Detail panel is shown below it, and never less than one row. When the list has more rows than its height, it SHALL show a window of consecutive rows filling its height, starting at the first row. The window SHALL move only when the selected row would not be shown. It SHALL then move just far enough to show the selected row together with the rows that cannot be selected directly above and below it, up to the nearest selectable row or the start or end of the list. When those do not all fit, it SHALL show the selected row and as many of the rows directly above it as fit. The window SHALL NOT leave rows empty below the last row while earlier rows are hidden. The window SHALL follow the terminal's current size, including after a resize.
