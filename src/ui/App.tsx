@@ -16,6 +16,8 @@ const BAR_WIDTH = 20;
 /** The list's narrowest width, and the panel's narrowest beside it, border included. */
 const LIST_MIN_WIDTH = 40;
 const PANEL_MIN_WIDTH = 40;
+/** The panel's narrowest beside the list in the `beside` Placement mode, border included. */
+const PANEL_SQUEEZED_MIN_WIDTH = 10;
 const REFRESH_MS = 5000;
 const ARTIFACT_LETTERS: [keyof Artifacts, string][] = [
   ["proposal", "P"],
@@ -64,7 +66,8 @@ interface RowKey {
  * ids, by Project index. `selected` indexes a selectable row of `rowsOf(state)`, and is undefined when
  * there is none. `focus` says which side `j`/`k` act on; it is `"list"` whenever nothing is selected.
  * `scroll` is how many lines the panel is scrolled down; after a refresh or resize it may exceed how
- * far the panel can scroll, and is clamped where it is drawn.
+ * far the panel can scroll, and is clamped where it is drawn. `placement` is the Placement mode: where
+ * the panel goes, or `"auto"` to choose by the terminal's width.
  */
 interface State {
   snapshots: readonly ProjectSnapshot[];
@@ -73,6 +76,7 @@ interface State {
   selected: number | undefined;
   focus: "list" | "panel";
   scroll: number;
+  placement: "auto" | "beside" | "below";
 }
 
 /**
@@ -85,6 +89,7 @@ type Action =
   | { type: "toggleExpanded" }
   | { type: "toggleArchived" }
   | { type: "toggleFocus" }
+  | { type: "cyclePlacement" }
   | { type: "refreshed"; project: number; snapshot: ProjectSnapshot };
 
 /** A Project the dashboard shows: its path as typed, its first snapshot, and how to read it again. */
@@ -102,9 +107,9 @@ export interface ProjectInput {
 export function App({ projects }: { projects: readonly ProjectInput[] }) {
   const [state, dispatch] = useReducer(reduce, projects, (projects) => {
     const initial = { snapshots: projects.map((p) => p.initial), expanded: projects.map(() => new Set<string>()), showArchived: false };
-    return { ...initial, selected: firstSelectable(rowsOf(initial)), focus: "list" as const, scroll: 0 };
+    return { ...initial, selected: firstSelectable(rowsOf(initial)), focus: "list" as const, scroll: 0, placement: "auto" as const };
   });
-  const { snapshots, selected, focus, scroll } = state;
+  const { snapshots, selected, focus, scroll, placement } = state;
   const rows = rowsOf(state);
   const { exit } = useApp();
   const { columns: terminalColumns, rows: terminalRows } = useWindowSize();
@@ -139,7 +144,7 @@ export function App({ projects }: { projects: readonly ProjectInput[] }) {
     LIST_MIN_WIDTH,
     ...changeRows.flatMap((row) => (row.version.kind === "change" ? [changeRowWidth(row.version, row.others, markerOf(row), widths)] : [])),
   );
-  const beside = terminalColumns >= listWidth + PANEL_MIN_WIDTH;
+  const beside = placement !== "below" && terminalColumns >= listWidth + (placement === "beside" ? PANEL_SQUEEZED_MIN_WIDTH : PANEL_MIN_WIDTH);
   const selectedRow = selected === undefined ? undefined : rows[selected];
   const panelBelow = !beside && isSelectable(selectedRow);
   // Below the list, the panel keeps a separator row and room for its first line and a cut line.
@@ -160,6 +165,7 @@ export function App({ projects }: { projects: readonly ProjectInput[] }) {
     if (key.return) dispatch({ type: "toggleExpanded" });
     if (key.tab) dispatch({ type: "toggleFocus" });
     if (input === "a") dispatch({ type: "toggleArchived" });
+    if (input === "v") dispatch({ type: "cyclePlacement" });
     if (input === "r") refresh();
   });
 
@@ -274,6 +280,9 @@ function apply(state: State, action: Action): State {
     case "toggleFocus":
       if (state.selected === undefined) return state;
       return { ...state, focus: state.focus === "list" ? "panel" : "list" };
+    case "cyclePlacement":
+      if (state.selected === undefined) return state;
+      return { ...state, placement: state.placement === "auto" ? "beside" : state.placement === "beside" ? "below" : "auto" };
     case "toggleExpanded": {
       if (row?.kind !== "change") return state;
       const { project, id } = row.key;

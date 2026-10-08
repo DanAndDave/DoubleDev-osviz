@@ -1556,10 +1556,10 @@ function placement(frame: string | undefined): "beside" | "below" | "none" {
 }
 
 describe("Panel placement", () => {
-  /** A Change whose row, `<id>  P S D T  <bar>  0/1  main`, is 60 columns wide. */
-  async function sixtyColumnList(size: Size) {
+  /** A Change with the one open task `task`, whose row, `<id>  P S D T  <bar>  0/1  main`, is 60 columns wide. */
+  async function sixtyColumnList(size: Size, task = "a") {
     const f = await fixture();
-    await f.write(`openspec/changes/${"x".repeat(18)}/tasks.md`, "- [ ] 1.1 a\n");
+    await f.write(`openspec/changes/${"x".repeat(18)}/tasks.md`, `- [ ] 1.1 ${task}\n`);
     const app = await show(f.root, size);
     expect(listLines(app.lastFrame())[0]).toHaveLength(60);
     return app;
@@ -1583,6 +1583,73 @@ describe("Panel placement", () => {
     expect(placement(app.lastFrame())).toBe("below");
     await resize(app, { columns: 100, rows: 20 });
     expect(placement(app.lastFrame())).toBe("beside");
+  });
+
+  test("v cycles beside, below, then auto", async () => {
+    const app = await sixtyColumnList({ columns: 99, rows: 20 });
+    await press(app, "v");
+    expect(placement(app.lastFrame())).toBe("beside");
+    await press(app, "v");
+    expect(placement(app.lastFrame())).toBe("below");
+    await press(app, "v");
+    expect(placement(app.lastFrame())).toBe("below");
+    await resize(app, { columns: 100, rows: 20 });
+    expect(placement(app.lastFrame())).toBe("beside");
+  });
+
+  test("below: under the list on a wide terminal", async () => {
+    const app = await sixtyColumnList({ columns: 100, rows: 20 });
+    await press(app, "v", "v");
+    await resize(app, { columns: 200, rows: 20 });
+    expect(placement(app.lastFrame())).toBe("below");
+    expect(panelLines(app.lastFrame())).toEqual([`${"x".repeat(18)}  main`, "  ○ 1.1 a"]);
+  });
+
+  test("beside: squeezed into the columns right of the list, lines cut", async () => {
+    const app = await sixtyColumnList({ columns: 75, rows: 20 }, "draw the panel");
+    await press(app, "v");
+    expect(placement(app.lastFrame())).toBe("beside");
+    expect(stripVTControlCharacters(app.lastFrame()!).split("\n")[0]!.indexOf(BESIDE)).toBe(60);
+    // 15 columns less the border and the space after it.
+    expect(panelLines(app.lastFrame())).toEqual([cut(`${"x".repeat(18)}  main`, 13), cut("  ○ 1.1 draw the panel", 13)]);
+  });
+
+  test("beside: below the list when under 10 columns are left", async () => {
+    const app = await sixtyColumnList({ columns: 69, rows: 20 });
+    await press(app, "v");
+    expect(placement(app.lastFrame())).toBe("below");
+    await resize(app, { columns: 70, rows: 20 });
+    expect(placement(app.lastFrame())).toBe("beside");
+  });
+
+  test("the Placement mode stays through a selection change and a refresh", async () => {
+    const f = await fixture();
+    await f.write("openspec/changes/a/tasks.md", "- [ ] 1.1\n", sept(2));
+    await f.write("openspec/changes/b/tasks.md", "- [ ] 1.1\n", sept(1));
+    const app = await show(f.root);
+    await press(app, "v", "v", "j");
+    expect(selected(app.lastFrame())).toEqual(["b"]);
+    expect(placement(app.lastFrame())).toBe("below");
+    await refresh(app);
+    expect(placement(app.lastFrame())).toBe("below");
+  });
+
+  test("v moves a focused panel and keeps its Focus", async () => {
+    const app = await sixtyColumnList({ columns: 100, rows: 20 });
+    await press(app, TAB, "v", "v");
+    expect(placement(app.lastFrame())).toBe("below");
+    expect(panelFocused(app.lastFrame())).toBe(true);
+  });
+
+  test("no panel: v changes nothing, and a later panel is placed as in auto", async () => {
+    const f = await noActiveChanges();
+    const app = await show(f.root, { columns: 99, rows: 20 });
+    await press(app, "v");
+    expect(placement(app.lastFrame())).toBe("none");
+    await f.write(`openspec/changes/${"x".repeat(18)}/tasks.md`, "- [ ] 1.1 a\n");
+    await refresh(app);
+    expect(listLines(app.lastFrame())[0]).toHaveLength(60);
+    expect(placement(app.lastFrame())).toBe("below");
   });
 });
 

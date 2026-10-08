@@ -63,3 +63,7 @@ _Avoid_: sidebar, inspector, preview
 **Focus**:
 Which side of the dashboard the movement keys act on: the list, where they move the selection, or the Detail panel, where they scroll it. `Tab` moves it; it is on the list whenever no row is selected.
 _Avoid_: active pane, mode
+
+**Placement mode**:
+Where the Detail panel goes: `auto` puts it beside the list when the terminal has 40 columns to spare and below otherwise; `beside` keeps it beside whenever 10 columns are left, squeezing it; `below` always puts it below. `v` cycles `auto` → `beside` → `below`; it starts as `auto` and lasts until the dashboard closes.
+_Avoid_: layout, orientation, split
