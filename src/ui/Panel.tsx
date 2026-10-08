@@ -18,8 +18,8 @@ export type PanelSubject = { kind: "version"; version: ChangeVersion; labelled: 
 /**
  * The Detail panel for `subject`, in `height` rows, scrolled down `scroll` lines (clamped to
  * `scrollLimit`). `beside` puts the panel's border on its left, for a panel right of the list, rather
- * than on top, for one below it. The border takes no row of `height`, and is cyan while the panel is
- * `focused`.
+ * than on top, for one below it. The border takes no row of `height`; it is heavy and cyan while the
+ * panel is `focused`, light and uncoloured otherwise.
  */
 export function Panel({ subject, beside, height, scroll, focused }: { subject: PanelSubject; beside: boolean; height: number; scroll: number; focused: boolean }) {
   return (
@@ -27,7 +27,7 @@ export function Panel({ subject, beside, height, scroll, focused }: { subject: P
       flexDirection="column"
       flexGrow={1}
       height={beside ? height : height + 1}
-      borderStyle="single"
+      borderStyle={focused ? "bold" : "single"}
       borderColor={focused ? "cyan" : undefined}
       borderTop={!beside}
       borderLeft={beside}

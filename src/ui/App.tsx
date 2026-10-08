@@ -13,6 +13,8 @@ import {
 import { Panel, type PanelSubject, scrollLimit } from "./Panel.tsx";
 
 const BAR_WIDTH = 20;
+/** The selection marker, drawn in the marker column that starts every list row but a header. */
+const SELECTION_MARKER = "> ";
 /** The list's narrowest width, and the panel's narrowest beside it, border included. */
 const LIST_MIN_WIDTH = 40;
 const PANEL_MIN_WIDTH = 40;
@@ -173,7 +175,7 @@ export function App({ projects }: { projects: readonly ProjectInput[] }) {
     <Box width={terminalColumns} flexDirection={beside ? "row" : "column"}>
       <Box flexDirection="column" flexShrink={0} width={listWidth}>
         {shown.map((row, i) => (
-          <RowLine key={top + i} row={row} label={projects[row.project]!.label} widths={widths} selected={top + i === selected} />
+          <RowLine key={top + i} row={row} label={projects[row.project]!.label} widths={widths} selected={top + i === selected} listFocused={focus === "list"} />
         ))}
       </Box>
       {subject !== undefined && <Panel subject={subject} beside={beside} height={panelHeight} scroll={Math.min(scroll, limit)} focused={focus === "panel"} />}
@@ -211,26 +213,42 @@ function isLabelled(snapshot: ProjectSnapshot): boolean {
   return snapshot.kind === "ok" && snapshot.labelled;
 }
 
-/** One list row, on one line. `label` is the row's Project's, shown by its header. */
-function RowLine({ row, label, widths, selected }: { row: Row; label: string; widths: Widths; selected: boolean }) {
+/**
+ * One list row, on one line. `label` is the row's Project's, shown by its header. Every row but a header
+ * starts with the marker column.
+ */
+function RowLine({ row, label, widths, selected, listFocused }: { row: Row; label: string; widths: Widths; selected: boolean; listFocused: boolean }) {
+  if (row.kind === "header") {
+    return (
+      <Text bold wrap="truncate-end">
+        {label}
+      </Text>
+    );
+  }
+  return (
+    <Text wrap="truncate-end">
+      <SelectionMarker selected={selected} listFocused={listFocused} />
+      <RowContents row={row} widths={widths} />
+    </Text>
+  );
+}
+
+/** The marker column: `SELECTION_MARKER` on the `selected` row, dimmed unless the list has Focus; blank otherwise. */
+function SelectionMarker({ selected, listFocused }: { selected: boolean; listFocused: boolean }) {
+  if (!selected) return " ".repeat(SELECTION_MARKER.length);
+  return <Text dimColor={!listFocused}>{SELECTION_MARKER}</Text>;
+}
+
+/** A row's contents after its marker column. */
+function RowContents({ row, widths }: { row: Exclude<Row, { kind: "header" }>; widths: Widths }) {
   switch (row.kind) {
-    case "header":
-      return (
-        <Text bold wrap="truncate-end">
-          {label}
-        </Text>
-      );
     case "empty":
       return <Text>No active changes</Text>;
     case "projectError":
-      return (
-        <Text inverse={selected} color="red" wrap="truncate-end">
-          ✗ {row.message}
-        </Text>
-      );
+      return <Text color="red">✗ {row.message}</Text>;
     case "change":
       return (
-        <Text inverse={selected} wrap="truncate-end">
+        <>
           {row.version.kind === "change" ? (
             <ChangeLine version={row.version} others={row.others} widths={widths} />
           ) : (
@@ -242,7 +260,7 @@ function RowLine({ row, label, widths, selected }: { row: Row; label: string; wi
             </Text>
           )}
           <Marker row={row} />
-        </Text>
+        </>
       );
   }
 }
@@ -410,12 +428,12 @@ function columnsText(version: ChangeSummary, others: number, widths: Widths): st
 }
 
 /**
- * The width of a Change row in terminal columns. String length is display width here: ids and labels
- * are ASCII, and `█░✓` are single-width.
+ * The width of a Change row in terminal columns, its marker column included. String length is display
+ * width here: ids and labels are ASCII, and `█░✓` are single-width.
  */
 function changeRowWidth(version: ChangeSummary, others: number, marker: string | undefined, widths: Widths): number {
   const artifacts = ARTIFACT_LETTERS.length * 2 - 1;
-  return widths.id + 2 + artifacts + 2 + BAR_WIDTH + 2 + columnsText(version, others, widths).length + (marker === undefined ? 0 : 2 + marker.length);
+  return SELECTION_MARKER.length + widths.id + 2 + artifacts + 2 + BAR_WIDTH + 2 + columnsText(version, others, widths).length + (marker === undefined ? 0 : 2 + marker.length);
 }
 
 /** `widths.label` is undefined when no Project has Source labels, which drops the label and `+N` columns. */

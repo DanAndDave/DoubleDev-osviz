@@ -61,7 +61,7 @@ What is shown about the selected row: for a Change row, its Change version's Tas
 _Avoid_: sidebar, inspector, preview
 
 **Focus**:
-Which side of the dashboard the movement keys act on: the list, where they move the selection, or the Detail panel, where they scroll it. `Tab` moves it; it is on the list whenever no row is selected.
+Which side of the dashboard the movement keys act on: the list, where they move the selection, or the Detail panel, where they scroll it. `Tab` moves it; it is on the list whenever no row is selected. Shown by the panel's border (heavy and cyan while the panel has it) and the selected row's `>` (dimmed while the panel has it).
 _Avoid_: active pane, mode
 
 **Placement mode**:

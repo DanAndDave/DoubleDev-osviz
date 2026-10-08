@@ -42,9 +42,9 @@ A project that cannot be read (missing path, no `openspec/` folder, unknown `--b
 
 ### What a row shows
 
-Each row is one change: its id, which planning documents exist (`P` proposal, `S` specs, `D` design, `T` tasks), a progress bar, and ticked over total task checkboxes, counted the way `openspec list` counts them. When a change exists in more than one place, the row shows the most recently changed copy, labelled with its branch or `wt:<worktree>`, and `+N` for the others. A change with every task ticked but not yet archived is marked `✓ ready to archive`.
+Each row is one change: its id, which planning documents exist (`P` proposal, `S` specs, `D` design, `T` tasks), a progress bar, and ticked over total task checkboxes, counted the way `openspec list` counts them. When a change exists in more than one place, the row shows the most recently changed copy, labelled with its branch or `wt:<worktree>`, and `+N` for the others. A change with every task ticked but not yet archived is marked `✓ ready to archive`. The selected row starts with `>`.
 
-Beside or below the list, the detail panel shows the selected change's tasks grouped by `##` section in `tasks.md`, plus the `Blocked by:` and `Triage:` lines from its `proposal.md`. When the tasks do not fit, press `Tab` to focus the panel (its border turns cyan) and scroll it with `j`/`k`. The panel goes beside the list when the terminal has room and below it otherwise; press `v` to force it beside (squeezed, with long lines cut), then below, then back to choosing by width.
+Beside or below the list, the detail panel shows the selected change's tasks grouped by `##` section in `tasks.md`, plus the `Blocked by:` and `Triage:` lines from its `proposal.md`. When the tasks do not fit, press `Tab` to focus the panel and scroll it with `j`/`k`: its border turns heavy and cyan, and the list's `>` dims. The panel goes beside the list when the terminal has room and below it otherwise; press `v` to force it beside (squeezed, with long lines cut), then below, then back to choosing by width.
 
 Every project is re-read every 5 seconds.
 

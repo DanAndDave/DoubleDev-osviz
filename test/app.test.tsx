@@ -90,8 +90,8 @@ async function refresh(app: Awaited<ReturnType<typeof show>>): Promise<void> {
   await app.refreshed();
 }
 
-const BESIDE = "│";
-const BELOW = /^─+$/;
+const BESIDE = /[│┃]/;
+const BELOW = /^[─━]+$/;
 
 /**
  * The frame's lines with styling removed, split into the list's and the panel's. Beside the list, each
@@ -102,7 +102,7 @@ function split(frame: string | undefined): { list: string[]; panel: string[] } {
   const lines = stripVTControlCharacters(frame ?? "").split("\n");
   const border = lines.findIndex((line) => BELOW.test(line));
   if (border >= 0) return { list: lines.slice(0, border), panel: withoutTrailingEmpty(lines.slice(border + 1).map((line) => line.slice(1).trimEnd())) };
-  const at = lines.find((line) => line.includes(BESIDE))?.indexOf(BESIDE);
+  const at = lines.find((line) => BESIDE.test(line))?.search(BESIDE);
   if (at === undefined) return { list: lines, panel: [] };
   return {
     list: withoutTrailingEmpty(lines.map((line) => line.slice(0, at).trimEnd())),
@@ -116,9 +116,28 @@ function withoutTrailingEmpty(lines: string[]): string[] {
   return lines.slice(0, end + 1);
 }
 
-/** The list's lines, styling removed. */
-function listLines(frame: string | undefined): string[] {
+/** The selection marker, and the blank marker column of every other row but a header. */
+const SELECTED = "> ";
+const UNSELECTED = " ".repeat(SELECTED.length);
+
+/** The list's lines as drawn, styling removed: with the marker column on every row but a header. */
+function rawListLines(frame: string | undefined): string[] {
   return split(frame).list;
+}
+
+/** The list's lines, styling and marker column removed. */
+function listLines(frame: string | undefined): string[] {
+  return rawListLines(frame).map(withoutMarker);
+}
+
+/** `line` without its marker column; a header line, which has none, as it is. */
+function withoutMarker(line: string): string {
+  return line.startsWith(SELECTED) || line.startsWith(UNSELECTED) ? line.slice(SELECTED.length) : line;
+}
+
+/** Each list line's marker column. */
+function markerColumn(frame: string | undefined): string[] {
+  return rawListLines(frame).map((line) => line.slice(0, SELECTED.length));
 }
 
 /** The panel's lines, styling removed; none when there is no panel. */
@@ -133,20 +152,18 @@ function styledLine(frame: string | undefined, text: string): string {
   return line;
 }
 
-const INVERSE = "\u001B[7m";
 const DOWN = "\u001B[B";
 const UP = "\u001B[A";
 const ENTER = "\r";
 const TAB = "\t";
 const CYAN = "\u001B[36m";
 
-/** The list rows drawn in inverse video, styling removed. */
+/** The list rows marked `> `, styling and marker column removed. */
 function selectedLines(frame: string | undefined): string[] {
-  const list = split(frame).list;
-  return (frame ?? "").split("\n").flatMap((line, i) => (line.includes(INVERSE) ? [list[i]!] : []));
+  return rawListLines(frame).flatMap((line) => (line.startsWith(SELECTED) ? [withoutMarker(line)] : []));
 }
 
-/** Ids of the rows drawn in inverse video. */
+/** Ids of the rows marked `> `. */
 function selected(frame: string | undefined): string[] {
   return selectedLines(frame).map((line) => line.split(" ")[0]!);
 }
@@ -283,8 +300,8 @@ describe("Project header rows", () => {
     );
     const app = render(<App projects={projects} />);
     await resize(app, ROOMY);
-    const [header, row] = listLines(app.lastFrame());
-    expect(row).toBe(`a  P S D T  ${"░".repeat(20)}  0/0  main`);
+    const [header, row] = rawListLines(app.lastFrame());
+    expect(row).toBe(`> a  P S D T  ${"░".repeat(20)}  0/0  main`);
     expect(header).toHaveLength(row!.length);
     expect(header).toStartWith(web.root);
     expect(header).toEndWith("x…");
@@ -614,11 +631,40 @@ describe("Selection", () => {
     expect(selected(app.lastFrame())).toEqual(["✗"]);
   });
 
-  test("nothing to select: no row highlighted", async () => {
+  test("nothing to select: no row marked", async () => {
     const app = await show([(await noActiveChanges()).root, (await noActiveChanges()).root]);
     await press(app, "j");
     expect(listLines(app.lastFrame()).filter((line) => line === "No active changes")).toHaveLength(2);
     expect(selectedLines(app.lastFrame())).toEqual([]);
+  });
+
+  test("the selected row starts with > and keeps its styling; the others start with two spaces", async () => {
+    const app = await threeRows();
+    const frame = app.lastFrame();
+    expect(markerColumn(frame)).toEqual([SELECTED, UNSELECTED, UNSELECTED]);
+    expect(styledLine(frame, "alpha")).toContain(BOLD("P"));
+  });
+
+  test("the marker follows the selection", async () => {
+    const app = await threeRows();
+    await press(app, "j");
+    expect(markerColumn(app.lastFrame())).toEqual([UNSELECTED, SELECTED, UNSELECTED]);
+  });
+
+  test("headers start in the first column; every other row starts with the marker column", async () => {
+    const web = await oneChange("login");
+    const empty = await noActiveChanges();
+    const app = await show([web.root, empty.root]);
+    expect(rawListLines(app.lastFrame())).toEqual([web.root, `> login  P S D T  ${"░".repeat(20)}  0/0  main`, empty.root, "  No active changes"]);
+  });
+
+  test("the > is dimmed while the panel has Focus", async () => {
+    const app = await threeRows();
+    await press(app, TAB);
+    expect(selected(app.lastFrame())).toEqual(["alpha"]);
+    expect(styledLine(app.lastFrame(), "alpha")).toContain(DIM(SELECTED));
+    await press(app, TAB);
+    expect(styledLine(app.lastFrame(), "alpha")).not.toContain(DIM(SELECTED));
   });
 });
 
@@ -699,14 +745,14 @@ describe("Error rows", () => {
   test("a path without openspec/ shows a single error row", async () => {
     const f = await fixture({ git: false });
     const { lastFrame } = await show(f.root);
-    expect(listLines(lastFrame())).toEqual([cut(`✗ no openspec/ folder found at ${f.root}`, LIST_MIN_WIDTH)]);
+    expect(listLines(lastFrame())).toEqual([cut(`✗ no openspec/ folder found at ${f.root}`, LIST_MIN_WIDTH - SELECTED.length)]);
   });
 
   test("a path that does not exist shows a single error row", async () => {
     const f = await fixture({ git: false });
     const missing = join(f.root, "nope");
     const { lastFrame } = await show(missing);
-    expect(listLines(lastFrame())).toEqual([cut(`✗ path does not exist: ${missing}`, LIST_MIN_WIDTH)]);
+    expect(listLines(lastFrame())).toEqual([cut(`✗ path does not exist: ${missing}`, LIST_MIN_WIDTH - SELECTED.length)]);
   });
 
   test("one Project unreadable: its header, then one error row cut to the list; the others shown normally", async () => {
@@ -751,7 +797,7 @@ describe("Error rows", () => {
   test("a 300-character error is cut to one line as wide as the widest Change row", async () => {
     const f = await fixture();
     await f.write("openspec/changes/broken/tasks.md", "- [x] a\n");
-    await f.write(`openspec/changes/${"x".repeat(18)}/tasks.md`, "- [ ] a\n");
+    await f.write(`openspec/changes/${"x".repeat(16)}/tasks.md`, "- [ ] a\n");
     const read = await readProject(f.root);
     if (read.kind !== "ok") throw new Error(read.message);
     // No file read fails with a message this long, so the read snapshot's Change version is made one.
@@ -763,11 +809,11 @@ describe("Error rows", () => {
     };
     const app = render(<App projects={[{ label: f.root, initial: snapshot, read: async () => snapshot }]} />);
     await resize(app, { columns: 200, rows: 20 });
-    const lines = listLines(app.lastFrame());
+    const lines = rawListLines(app.lastFrame());
     expect(lines).toHaveLength(2);
-    expect(lines[1]).toBe(`${"x".repeat(18)}  P S D T  ${"░".repeat(20)}  0/1  main`);
+    expect(lines[1]).toBe(`  ${"x".repeat(16)}  P S D T  ${"░".repeat(20)}  0/1  main`);
     expect(lines[0]).toHaveLength(60);
-    expect(lines[0]).toStartWith("broken              main  ✗ mmm");
+    expect(lines[0]).toStartWith("> broken            main  ✗ mmm");
     expect(lines[0]).toEndWith("m…");
   });
 
@@ -947,7 +993,7 @@ describe("Problems during a refresh", () => {
     const app = await show(f.root);
     await rename(join(f.root, "openspec"), join(f.root, "moved"));
     await refresh(app);
-    expect(listLines(app.lastFrame())).toEqual([cut(`✗ no openspec/ folder found at ${f.root}`, LIST_MIN_WIDTH)]);
+    expect(listLines(app.lastFrame())).toEqual([cut(`✗ no openspec/ folder found at ${f.root}`, LIST_MIN_WIDTH - SELECTED.length)]);
     await rename(join(f.root, "moved"), join(f.root, "openspec"));
     await refresh(app);
     expect(listLines(app.lastFrame())).toEqual([`add-auth  P S D T  ${"█".repeat(6)}${"░".repeat(14)}  3/10  main`]);
@@ -1296,7 +1342,7 @@ describe("Panel shows the selected Change version", () => {
   test("no rows: no panel", async () => {
     const f = await noActiveChanges();
     const { lastFrame } = await show(f.root);
-    expect(stripVTControlCharacters(lastFrame() ?? "")).toBe("No active changes");
+    expect(stripVTControlCharacters(lastFrame() ?? "")).toBe("  No active changes");
   });
 
   test("Project error: its row is selected and the panel shows the Project's path and error", async () => {
@@ -1427,8 +1473,8 @@ describe("Task lines", () => {
   test("a task wider than the panel takes one line ending in …", async () => {
     const f = await fixture();
     await f.write("openspec/changes/a/tasks.md", `- [ ] ${"x".repeat(200)}\n`);
-    // `a  P S D T  <bar>  0/1  main` is 43 columns, so at 83 the panel beside it is 40, border and padding included.
-    const { lastFrame } = await show(f.root, { columns: 83, rows: 20 });
+    // `  a  P S D T  <bar>  0/1  main` is 45 columns, so at 85 the panel beside it is 40, border and padding included.
+    const { lastFrame } = await show(f.root, { columns: 85, rows: 20 });
     const panel = panelLines(lastFrame());
     expect(panel).toHaveLength(2);
     expect(panel[1]).toEndWith("x…");
@@ -1552,29 +1598,29 @@ describe("Panel empty and error cases", () => {
 function placement(frame: string | undefined): "beside" | "below" | "none" {
   const lines = stripVTControlCharacters(frame ?? "").split("\n");
   if (lines.some((line) => BELOW.test(line))) return "below";
-  return lines.some((line) => line.includes(BESIDE)) ? "beside" : "none";
+  return lines.some((line) => BESIDE.test(line)) ? "beside" : "none";
 }
 
 describe("Panel placement", () => {
-  /** A Change with the one open task `task`, whose row, `<id>  P S D T  <bar>  0/1  main`, is 60 columns wide. */
+  /** A Change with the one open task `task`, whose row, `  <id>  P S D T  <bar>  0/1  main`, is 60 columns wide. */
   async function sixtyColumnList(size: Size, task = "a") {
     const f = await fixture();
-    await f.write(`openspec/changes/${"x".repeat(18)}/tasks.md`, `- [ ] 1.1 ${task}\n`);
+    await f.write(`openspec/changes/${"x".repeat(16)}/tasks.md`, `- [ ] 1.1 ${task}\n`);
     const app = await show(f.root, size);
-    expect(listLines(app.lastFrame())[0]).toHaveLength(60);
+    expect(rawListLines(app.lastFrame())[0]).toHaveLength(60);
     return app;
   }
 
   test("terminal at least list + 40 wide: beside the list", async () => {
     const app = await sixtyColumnList({ columns: 100, rows: 20 });
     expect(placement(app.lastFrame())).toBe("beside");
-    expect(stripVTControlCharacters(app.lastFrame()!).split("\n")[0]!.indexOf(BESIDE)).toBe(60);
+    expect(stripVTControlCharacters(app.lastFrame()!).split("\n")[0]!.search(BESIDE)).toBe(60);
   });
 
   test("narrower: below the list, under a separating line", async () => {
     const app = await sixtyColumnList({ columns: 99, rows: 20 });
     expect(placement(app.lastFrame())).toBe("below");
-    expect(panelLines(app.lastFrame())).toEqual([`${"x".repeat(18)}  main`, "  ○ 1.1 a"]);
+    expect(panelLines(app.lastFrame())).toEqual([`${"x".repeat(16)}  main`, "  ○ 1.1 a"]);
   });
 
   test("follows a resize without a key", async () => {
@@ -1602,16 +1648,16 @@ describe("Panel placement", () => {
     await press(app, "v", "v");
     await resize(app, { columns: 200, rows: 20 });
     expect(placement(app.lastFrame())).toBe("below");
-    expect(panelLines(app.lastFrame())).toEqual([`${"x".repeat(18)}  main`, "  ○ 1.1 a"]);
+    expect(panelLines(app.lastFrame())).toEqual([`${"x".repeat(16)}  main`, "  ○ 1.1 a"]);
   });
 
   test("beside: squeezed into the columns right of the list, lines cut", async () => {
     const app = await sixtyColumnList({ columns: 75, rows: 20 }, "draw the panel");
     await press(app, "v");
     expect(placement(app.lastFrame())).toBe("beside");
-    expect(stripVTControlCharacters(app.lastFrame()!).split("\n")[0]!.indexOf(BESIDE)).toBe(60);
+    expect(stripVTControlCharacters(app.lastFrame()!).split("\n")[0]!.search(BESIDE)).toBe(60);
     // 15 columns less the border and the space after it.
-    expect(panelLines(app.lastFrame())).toEqual([cut(`${"x".repeat(18)}  main`, 13), cut("  ○ 1.1 draw the panel", 13)]);
+    expect(panelLines(app.lastFrame())).toEqual([cut(`${"x".repeat(16)}  main`, 13), cut("  ○ 1.1 draw the panel", 13)]);
   });
 
   test("beside: below the list when under 10 columns are left", async () => {
@@ -1646,16 +1692,23 @@ describe("Panel placement", () => {
     const app = await show(f.root, { columns: 99, rows: 20 });
     await press(app, "v");
     expect(placement(app.lastFrame())).toBe("none");
-    await f.write(`openspec/changes/${"x".repeat(18)}/tasks.md`, "- [ ] 1.1 a\n");
+    await f.write(`openspec/changes/${"x".repeat(16)}/tasks.md`, "- [ ] 1.1 a\n");
     await refresh(app);
-    expect(listLines(app.lastFrame())[0]).toHaveLength(60);
+    expect(rawListLines(app.lastFrame())[0]).toHaveLength(60);
     expect(placement(app.lastFrame())).toBe("below");
   });
 });
 
-/** Whether the panel's border is drawn in cyan, beside or below the list. */
+/** Whether the panel's border is drawn heavy and in cyan, beside or below the list. */
 function panelFocused(frame: string | undefined): boolean {
-  return [`${CYAN}│`, `${CYAN}─`].some((border) => (frame ?? "").includes(border));
+  return [`${CYAN}┃`, `${CYAN}━`].some((border) => (frame ?? "").includes(border));
+}
+
+/** Whether the panel's border is drawn light and uncoloured, beside or below the list. */
+function panelUnfocused(frame: string | undefined): boolean {
+  const lines = (frame ?? "").split("\n");
+  const border = lines.find((line) => /[│─┃━]/.test(stripVTControlCharacters(line)));
+  return border !== undefined && /[│─]/.test(border) && !/[┃━]/.test(border) && !border.includes(CYAN);
 }
 
 describe("Panel focus", () => {
@@ -1667,21 +1720,22 @@ describe("Panel focus", () => {
     return show(f.root);
   }
 
-  test("starts on the list: the panel's border is not cyan", async () => {
+  test("starts on the list: the panel's border is light and not cyan", async () => {
     const app = await twoChanges();
     expect(placement(app.lastFrame())).toBe("beside");
-    expect(panelFocused(app.lastFrame())).toBe(false);
+    expect(panelUnfocused(app.lastFrame())).toBe(true);
   });
 
-  test("Tab moves Focus to the panel, drawing its border cyan, and back", async () => {
+  test("Tab moves Focus to the panel, drawing its border heavy and cyan, and back", async () => {
     const app = await twoChanges();
     await press(app, TAB);
     expect(panelFocused(app.lastFrame())).toBe(true);
     await press(app, TAB);
     expect(panelFocused(app.lastFrame())).toBe(false);
+    expect(panelUnfocused(app.lastFrame())).toBe(true);
   });
 
-  test("a panel below the list is drawn cyan too", async () => {
+  test("a focused panel below the list: its top border is a cyan line of ━", async () => {
     const app = await twoChanges();
     await resize(app, { columns: 60, rows: 20 });
     await press(app, TAB);
