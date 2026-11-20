@@ -15,4 +15,14 @@ const projects = await Promise.all(
     return { label, initial: await read(), read };
   }),
 );
-await render(<App projects={projects} />).waitUntilExit();
+// xterm button-event tracking (1002) reports presses, releases and motion while a button is held; 1006 reports them in SGR form.
+const MOUSE_ON = "\u001B[?1002h\u001B[?1006h";
+const MOUSE_OFF = "\u001B[?1002l\u001B[?1006l";
+const onMouseCapture = (on: boolean) => {
+  if (process.stdout.isTTY) process.stdout.write(on ? MOUSE_ON : MOUSE_OFF);
+};
+try {
+  await render(<App projects={projects} onMouseCapture={onMouseCapture} />).waitUntilExit();
+} finally {
+  onMouseCapture(false);
+}

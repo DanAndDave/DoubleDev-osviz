@@ -45,7 +45,8 @@ const ROOMY: Size = { columns: 200, rows: 50 };
 /**
  * Renders the dashboard for the Projects at `paths`, each labelled with its path and read with `base`
  * as `--base`, in a terminal of `size` and lets Ink finish its frame. Every read the dashboard starts
- * is recorded in `reads`; `refreshed()` waits for them and the frame that follows.
+ * is recorded in `reads`; `refreshed()` waits for them and the frame that follows. Every call the
+ * dashboard makes to turn mouse reporting on or off is recorded in `mouse`.
  */
 async function show(paths: string | string[], size: Size = ROOMY, { base }: { base?: string } = {}) {
   const reads: Promise<ProjectSnapshot>[] = [];
@@ -59,14 +60,15 @@ async function show(paths: string | string[], size: Size = ROOMY, { base }: { ba
       return { label: path, initial: await readProject(path, { base }), read };
     }),
   );
-  const app = render(<App projects={projects} />);
+  const mouse: boolean[] = [];
+  const app = render(<App projects={projects} onMouseCapture={(on) => mouse.push(on)} />);
   await settle();
   await resize(app, size);
   const refreshed = async () => {
     await Promise.all(reads);
     await settle();
   };
-  return { ...app, reads, refreshed };
+  return { ...app, reads, refreshed, mouse };
 }
 
 /** `text` as one line of `width` columns: cut and ending in `…` when longer. */
@@ -90,8 +92,8 @@ async function refresh(app: Awaited<ReturnType<typeof show>>): Promise<void> {
   await app.refreshed();
 }
 
-const BESIDE = /[│┃]/;
-const BELOW = /^[─━]+$/;
+const BESIDE = /[│┃║]/;
+const BELOW = /^[─━═]+$/;
 
 /**
  * The frame's lines with styling removed, split into the list's and the panel's. Beside the list, each
@@ -1797,6 +1799,200 @@ describe("Panel focus", () => {
     await f.write("openspec/changes/b/tasks.md", "- [ ] 1.1\n", sept(3));
     await refresh(app);
     expect(panelFocused(app.lastFrame())).toBe(false);
+  });
+});
+
+/** An SGR mouse report for button `code` at 0-based `column` and `row`: a press or motion, or a `release`. */
+function pointer(code: number, column: number, row: number, release = false): string {
+  return `\u001B[<${code};${column + 1};${row + 1}${release ? "m" : "M"}`;
+}
+
+const PRESS = (column: number, row: number) => pointer(0, column, row);
+const DRAG = (column: number, row: number) => pointer(32, column, row);
+const RELEASE = (column: number, row: number) => pointer(0, column, row, true);
+const ESC = "\u001B";
+
+/** Whether the frame draws the panel's border double, as while the Divider is armed. */
+function armedBorder(frame: string | undefined): boolean {
+  return /[║═]/.test(stripVTControlCharacters(frame ?? ""));
+}
+
+/** The column of the panel's border beside the list, counting from 0. */
+function dividerColumn(frame: string | undefined): number {
+  return stripVTControlCharacters(frame ?? "").split("\n")[0]!.search(BESIDE);
+}
+
+/** The row of the panel's border below the list, counting from 0. */
+function dividerRow(frame: string | undefined): number {
+  return stripVTControlCharacters(frame ?? "").split("\n").findIndex((line) => BELOW.test(line));
+}
+
+describe("Moving the Divider", () => {
+  /** A Change with one open task, whose row is 60 columns wide, in a terminal of `size`. */
+  async function sixtyColumnList(size: Size) {
+    const f = await fixture();
+    await f.write(`openspec/changes/${"x".repeat(16)}/tasks.md`, "- [ ] 1.1 a\n");
+    const app = await show(f.root, size);
+    expect(rawListLines(app.lastFrame())[0]).toHaveLength(60);
+    return { ...app, f };
+  }
+
+  /** Whether the dashboard last asked for the mouse to be reported. */
+  const reported = (app: { mouse: boolean[] }) => app.mouse.at(-1) === true;
+
+  test("not armed by default: no mouse reports, light border", async () => {
+    const app = await sixtyColumnList({ columns: 120, rows: 20 });
+    expect(reported(app)).toBe(false);
+    expect(panelUnfocused(app.lastFrame())).toBe(true);
+  });
+
+  test("m arms the Divider: mouse reported, border double; m again disarms", async () => {
+    const app = await sixtyColumnList({ columns: 120, rows: 20 });
+    await press(app, "m");
+    expect(reported(app)).toBe(true);
+    expect(stripVTControlCharacters(app.lastFrame()!)).toContain("║");
+    await press(app, "m");
+    expect(reported(app)).toBe(false);
+    expect(panelUnfocused(app.lastFrame())).toBe(true);
+  });
+
+  test("armed with the panel focused: double and cyan; m works whichever side has Focus", async () => {
+    const app = await sixtyColumnList({ columns: 120, rows: 20 });
+    await press(app, TAB, "m");
+    expect(app.lastFrame()).toContain(`${CYAN}║`);
+    expect(reported(app)).toBe(true);
+  });
+
+  test("other keys act while armed, and a moved Divider stays through a selection change and a refresh", async () => {
+    const f = await fixture();
+    await f.write("openspec/changes/a/tasks.md", "- [ ] 1.1\n", sept(2));
+    await f.write("openspec/changes/b/tasks.md", "- [ ] 1.1\n", sept(1));
+    const app = await show(f.root);
+    await press(app, "m", PRESS(50, 0), "j");
+    expect(selected(app.lastFrame())).toEqual(["b"]);
+    expect(reported(app)).toBe(true);
+    await press(app, RELEASE(50, 0));
+    await refresh(app);
+    expect(dividerColumn(app.lastFrame())).toBe(50);
+  });
+
+  test("wheel and other buttons are ignored, a right-button release keeps it armed, a Ctrl-drag moves it", async () => {
+    const app = await sixtyColumnList({ columns: 120, rows: 20 });
+    await press(app, "m", pointer(64, 30, 0), pointer(2, 30, 0), pointer(2, 30, 0, true));
+    expect(dividerColumn(app.lastFrame())).toBe(60);
+    expect(reported(app)).toBe(true);
+    await press(app, pointer(16 + 32, 30, 0));
+    expect(dividerColumn(app.lastFrame())).toBe(30);
+  });
+
+  test("armed below the list, the border is a line of ═", async () => {
+    const app = await sixtyColumnList({ columns: 99, rows: 20 });
+    await press(app, "m");
+    expect(stripVTControlCharacters(app.lastFrame()!).split("\n")[dividerRow(app.lastFrame())]).toMatch(/^═+$/);
+  });
+
+  test("Esc disarms", async () => {
+    const app = await sixtyColumnList({ columns: 120, rows: 20 });
+    await press(app, "m", ESC);
+    await settle();
+    expect(reported(app)).toBe(false);
+    expect(armedBorder(app.lastFrame())).toBe(false);
+  });
+
+  test("dragging beside the list sets its width; releasing disarms", async () => {
+    const app = await sixtyColumnList({ columns: 120, rows: 20 });
+    await press(app, "m", PRESS(60, 0), DRAG(70, 3), DRAG(80, 3));
+    expect(dividerColumn(app.lastFrame())).toBe(80);
+    expect(reported(app)).toBe(true);
+    await press(app, RELEASE(80, 3));
+    expect(dividerColumn(app.lastFrame())).toBe(80);
+    expect(reported(app)).toBe(false);
+    expect(armedBorder(app.lastFrame())).toBe(false);
+    expect(panelLines(app.lastFrame())).toEqual([`${"x".repeat(16)}  main`, "  ○ 1.1 a"]);
+  });
+
+  test("narrowing the list cuts its Change rows with …", async () => {
+    const app = await sixtyColumnList({ columns: 120, rows: 20 });
+    const row = rawListLines(app.lastFrame())[0]!;
+    await press(app, "m", PRESS(30, 0));
+    expect(dividerColumn(app.lastFrame())).toBe(30);
+    expect(rawListLines(app.lastFrame())[0]).toBe(cut(row, 30));
+  });
+
+  test("clamped to leave the panel 10 columns and the list 10", async () => {
+    const app = await sixtyColumnList({ columns: 120, rows: 20 });
+    await press(app, "m", PRESS(115, 0));
+    expect(dividerColumn(app.lastFrame())).toBe(110);
+    await press(app, DRAG(2, 0));
+    expect(dividerColumn(app.lastFrame())).toBe(10);
+  });
+
+  test("a terminal made narrower clamps the moved Divider", async () => {
+    const app = await sixtyColumnList({ columns: 120, rows: 20 });
+    await press(app, "m", PRESS(100, 0), RELEASE(100, 0));
+    await resize(app, { columns: 105, rows: 20 });
+    expect(dividerColumn(app.lastFrame())).toBe(95);
+  });
+
+  test("dragging below the list sets its height, empty rows and all; releasing disarms", async () => {
+    const app = await sixtyColumnList({ columns: 99, rows: 30 });
+    expect(dividerRow(app.lastFrame())).toBe(1);
+    await press(app, "m", PRESS(5, 10));
+    expect(dividerRow(app.lastFrame())).toBe(10);
+    expect(rawListLines(app.lastFrame())).toHaveLength(10);
+    expect(panelLines(app.lastFrame())).toEqual([`${"x".repeat(16)}  main`, "  ○ 1.1 a"]);
+    await press(app, PRESS(5, 29));
+    expect(dividerRow(app.lastFrame())).toBe(27);
+    await press(app, RELEASE(5, 20));
+    expect(dividerRow(app.lastFrame())).toBe(27);
+    expect(reported(app)).toBe(false);
+  });
+
+  test("a terminal made shorter clamps the Divider below the list", async () => {
+    const app = await sixtyColumnList({ columns: 99, rows: 30 });
+    await press(app, "m", PRESS(5, 20), RELEASE(5, 20));
+    await resize(app, { columns: 99, rows: 15 });
+    expect(dividerRow(app.lastFrame())).toBe(12);
+  });
+
+  test("each placement keeps its own place across v", async () => {
+    const app = await sixtyColumnList({ columns: 120, rows: 20 });
+    await press(app, "m", PRESS(50, 0), RELEASE(50, 0), "v", "v");
+    expect(placement(app.lastFrame())).toBe("below");
+    expect(dividerRow(app.lastFrame())).toBe(1);
+    await press(app, "v");
+    expect(dividerColumn(app.lastFrame())).toBe(50);
+  });
+
+  test("pointer reports while disarmed change nothing", async () => {
+    const app = await sixtyColumnList({ columns: 120, rows: 20 });
+    const before = app.lastFrame();
+    await press(app, PRESS(30, 0), DRAG(40, 0), RELEASE(40, 0));
+    expect(app.lastFrame()).toBe(before);
+  });
+
+  test("disarmed when the panel goes away", async () => {
+    const app = await sixtyColumnList({ columns: 120, rows: 20 });
+    await press(app, "m");
+    await rm(join(app.f.root, `openspec/changes/${"x".repeat(16)}`), { recursive: true });
+    await refresh(app);
+    expect(placement(app.lastFrame())).toBe("none");
+    expect(reported(app)).toBe(false);
+  });
+
+  test("mouse reports stop when the dashboard closes armed", async () => {
+    const app = await sixtyColumnList({ columns: 120, rows: 20 });
+    await press(app, "m");
+    app.unmount();
+    expect(reported(app)).toBe(false);
+  });
+
+  test("no panel: m changes nothing", async () => {
+    const app = await show((await noActiveChanges()).root);
+    const before = app.lastFrame();
+    await press(app, "m");
+    expect(app.lastFrame()).toBe(before);
+    expect(reported(app)).toBe(false);
   });
 });
 

@@ -19,15 +19,15 @@ export type PanelSubject = { kind: "version"; version: ChangeVersion; labelled: 
  * The Detail panel for `subject`, in `height` rows, scrolled down `scroll` lines (clamped to
  * `scrollLimit`). `beside` puts the panel's border on its left, for a panel right of the list, rather
  * than on top, for one below it. The border takes no row of `height`; it is heavy and cyan while the
- * panel is `focused`, light and uncoloured otherwise.
+ * panel is `focused`, light and uncoloured otherwise, and double while the Divider is `armed`.
  */
-export function Panel({ subject, beside, height, scroll, focused }: { subject: PanelSubject; beside: boolean; height: number; scroll: number; focused: boolean }) {
+export function Panel({ subject, beside, height, scroll, focused, armed }: { subject: PanelSubject; beside: boolean; height: number; scroll: number; focused: boolean; armed: boolean }) {
   return (
     <Box
       flexDirection="column"
       flexGrow={1}
       height={beside ? height : height + 1}
-      borderStyle={focused ? "bold" : "single"}
+      borderStyle={armed ? "double" : focused ? "bold" : "single"}
       borderColor={focused ? "cyan" : undefined}
       borderTop={!beside}
       borderLeft={beside}

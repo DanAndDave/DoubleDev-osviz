@@ -44,7 +44,7 @@ A project that cannot be read (missing path, no `openspec/` folder, unknown `--b
 
 Each row is one change: its id, which planning documents exist (`P` proposal, `S` specs, `D` design, `T` tasks), a progress bar, and ticked over total task checkboxes, counted the way `openspec list` counts them. When a change exists in more than one place, the row shows the most recently changed copy, labelled with its branch or `wt:<worktree>`, and `+N` for the others. A change with every task ticked but not yet archived is marked `✓ ready to archive`. The selected row starts with `>`.
 
-Beside or below the list, the detail panel shows the selected change's tasks grouped by `##` section in `tasks.md`, plus the `Blocked by:` and `Triage:` lines from its `proposal.md`. When the tasks do not fit, press `Tab` to focus the panel and scroll it with `j`/`k`: its border turns heavy and cyan, and the list's `>` dims. The panel goes beside the list when the terminal has room and below it otherwise; press `v` to force it beside (squeezed, with long lines cut), then below, then back to choosing by width.
+Beside or below the list, the detail panel shows the selected change's tasks grouped by `##` section in `tasks.md`, plus the `Blocked by:` and `Triage:` lines from its `proposal.md`. When the tasks do not fit, press `Tab` to focus the panel and scroll it with `j`/`k`: its border turns heavy and cyan, and the list's `>` dims. The panel goes beside the list when the terminal has room and below it otherwise; press `v` to force it beside (squeezed, with long lines cut), then below, then back to choosing by width. To resize the list and the panel, press `m`: the border between them turns double, and dragging with the mouse moves it until you release the button. The mouse is captured only between `m` and the release, so click-drag selects text the rest of the time.
 
 Every project is re-read every 5 seconds.
 
@@ -56,6 +56,7 @@ Every project is re-read every 5 seconds.
 | `Tab` | Move focus between the list and the detail panel |
 | `Enter` | Expand a change into one row per branch or worktree, or collapse it |
 | `v` | Place the detail panel: by terminal width, beside the list, or below it |
+| `m` | Arm the border between list and panel for one mouse drag; `m` or `Esc` again cancels |
 | `a` | Show or hide archived changes |
 | `r` | Re-read every project now |
 | `q` | Quit |

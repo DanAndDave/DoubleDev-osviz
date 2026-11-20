@@ -20,6 +20,17 @@ const LIST_MIN_WIDTH = 40;
 const PANEL_MIN_WIDTH = 40;
 /** The panel's narrowest beside the list in the `beside` Placement mode, border included. */
 const PANEL_SQUEEZED_MIN_WIDTH = 10;
+/** The list's narrowest width beside the panel once the Divider is moved, as the panel's is squeezed. */
+const LIST_SQUEEZED_MIN_WIDTH = 10;
+/**
+ * An SGR mouse report (xterm mode 1006) as `useInput` passes it, its escape stripped: the button code,
+ * the pointer's column and row counting from 1, then `M` for a press or motion, `m` for a release.
+ */
+const MOUSE_REPORT = /^\[<(\d+);(\d+);(\d+)([Mm])$/;
+/** Report button codes for the left button pressed and moved while held; Shift, Alt and Ctrl add 4, 8 and 16. */
+const LEFT_PRESS = 0;
+const LEFT_DRAG = 32;
+const MODIFIER_BITS = 4 | 8 | 16;
 const REFRESH_MS = 5000;
 const ARTIFACT_LETTERS: [keyof Artifacts, string][] = [
   ["proposal", "P"],
@@ -69,7 +80,9 @@ interface RowKey {
  * there is none. `focus` says which side `j`/`k` act on; it is `"list"` whenever nothing is selected.
  * `scroll` is how many lines the panel is scrolled down; after a refresh or resize it may exceed how
  * far the panel can scroll, and is clamped where it is drawn. `placement` is the Placement mode: where
- * the panel goes, or `"auto"` to choose by the terminal's width.
+ * the panel goes, or `"auto"` to choose by the terminal's width. `divider` is where the Divider was
+ * moved: the list's width beside the panel and its height below it, undefined until moved there, and
+ * clamped where it is drawn after a resize. `dividerArmed` is false whenever nothing is selected.
  */
 interface State {
   snapshots: readonly ProjectSnapshot[];
@@ -79,11 +92,14 @@ interface State {
   focus: "list" | "panel";
   scroll: number;
   placement: "auto" | "beside" | "below";
+  divider: { beside: number | undefined; below: number | undefined };
+  dividerArmed: boolean;
 }
 
 /**
- * What can happen to the dashboard: a key press, or a read of a Project finishing. `scroll` moves the
- * panel `by` lines, keeping it within the `limit` it was last drawn with.
+ * What can happen to the dashboard: a key press, a mouse report, or a read of a Project finishing.
+ * `scroll` moves the panel `by` lines, keeping it within the `limit` it was last drawn with;
+ * `moveDivider` puts the Divider `at` a place already clamped to the terminal.
  */
 type Action =
   | { type: "move"; by: 1 | -1 }
@@ -92,6 +108,9 @@ type Action =
   | { type: "toggleArchived" }
   | { type: "toggleFocus" }
   | { type: "cyclePlacement" }
+  | { type: "toggleDivider" }
+  | { type: "disarmDivider" }
+  | { type: "moveDivider"; side: "beside" | "below"; at: number }
   | { type: "refreshed"; project: number; snapshot: ProjectSnapshot };
 
 /** A Project the dashboard shows: its path as typed, its first snapshot, and how to read it again. */
@@ -103,15 +122,24 @@ export interface ProjectInput {
 
 /**
  * The dashboard for `projects`, in command-line order. Renders only: it never reads the filesystem or
- * git itself, but calls each Project's `read` to get a new snapshot of it. `projects` must not change
- * for the dashboard's life.
+ * git itself, but calls each Project's `read` to get a new snapshot of it, and `onMouseCapture` to have
+ * the terminal start (`true`) or stop (`false`) reporting the mouse. `projects` must not change for the
+ * dashboard's life.
  */
-export function App({ projects }: { projects: readonly ProjectInput[] }) {
+export function App({ projects, onMouseCapture }: { projects: readonly ProjectInput[]; onMouseCapture?: (on: boolean) => void }) {
   const [state, dispatch] = useReducer(reduce, projects, (projects) => {
     const initial = { snapshots: projects.map((p) => p.initial), expanded: projects.map(() => new Set<string>()), showArchived: false };
-    return { ...initial, selected: firstSelectable(rowsOf(initial)), focus: "list" as const, scroll: 0, placement: "auto" as const };
+    return {
+      ...initial,
+      selected: firstSelectable(rowsOf(initial)),
+      focus: "list" as const,
+      scroll: 0,
+      placement: "auto" as const,
+      divider: { beside: undefined, below: undefined },
+      dividerArmed: false,
+    };
   });
-  const { snapshots, selected, focus, scroll, placement } = state;
+  const { snapshots, selected, focus, scroll, placement, divider, dividerArmed } = state;
   const rows = rowsOf(state);
   const { exit } = useApp();
   const { columns: terminalColumns, rows: terminalRows } = useWindowSize();
@@ -133,6 +161,12 @@ export function App({ projects }: { projects: readonly ProjectInput[] }) {
     const interval = setInterval(refresh, REFRESH_MS);
     return () => clearInterval(interval);
   }, []);
+  // The mouse is reported only while the Divider is armed, so click-drag selects text in the terminal otherwise.
+  useEffect(() => {
+    if (!dividerArmed) return;
+    onMouseCapture?.(true);
+    return () => onMouseCapture?.(false);
+  }, [dividerArmed]);
 
   const changeRows = rows.filter((row) => row.kind === "change");
   const summaries = changeRows.flatMap((row) => (row.version.kind === "change" ? [row.version] : []));
@@ -142,25 +176,46 @@ export function App({ projects }: { projects: readonly ProjectInput[] }) {
     progress: Math.max(0, ...summaries.map((v) => progressText(v).length)),
     label: labelled ? Math.max(0, ...changeRows.map((row) => row.version.source?.length ?? 0)) : undefined,
   };
-  const listWidth = Math.max(
+  const naturalWidth = Math.max(
     LIST_MIN_WIDTH,
     ...changeRows.flatMap((row) => (row.version.kind === "change" ? [changeRowWidth(row.version, row.others, markerOf(row), widths)] : [])),
   );
-  const beside = placement !== "below" && terminalColumns >= listWidth + (placement === "beside" ? PANEL_SQUEEZED_MIN_WIDTH : PANEL_MIN_WIDTH);
+  const beside = placement !== "below" && terminalColumns >= naturalWidth + (placement === "beside" ? PANEL_SQUEEZED_MIN_WIDTH : PANEL_MIN_WIDTH);
+  const widthBounds = [LIST_SQUEEZED_MIN_WIDTH, terminalColumns - PANEL_SQUEEZED_MIN_WIDTH] as const;
+  const listWidth = beside && divider.beside !== undefined ? clamp(divider.beside, ...widthBounds) : naturalWidth;
   const selectedRow = selected === undefined ? undefined : rows[selected];
   const panelBelow = !beside && isSelectable(selectedRow);
-  // Below the list, the panel keeps a separator row and room for its first line and a cut line.
-  const listHeight = Math.max(panelBelow ? terminalRows - 3 : terminalRows, 1);
+  // Below the list, the panel keeps a row for the Divider and room for its first line and a cut line.
+  const heightBounds = [1, Math.max(panelBelow ? terminalRows - 3 : terminalRows, 1)] as const;
+  // A Divider moved below the list sets its height, empty rows and all.
+  const dividedHeight = panelBelow && divider.below !== undefined ? clamp(divider.below, ...heightBounds) : undefined;
+  const listHeight = dividedHeight ?? heightBounds[1];
   const top = windowTop(previousTop.current, rows, selected, listHeight);
   previousTop.current = top;
   const shown = rows.slice(top, top + listHeight);
   // Below the list, the panel gets the rows the list and its border leave, but always room for its first line and a cut line.
-  const panelHeight = Math.max(beside ? terminalRows : terminalRows - shown.length - 1, 2);
+  const panelHeight = Math.max(beside ? terminalRows : terminalRows - (dividedHeight ?? shown.length) - 1, 2);
   const subject = isSelectable(selectedRow) ? panelSubject(selectedRow, projects[selectedRow.project]!.label, snapshots) : undefined;
   const limit = subject === undefined ? 0 : scrollLimit(subject, panelHeight);
   // Runs on a key press after this render, so `focus` and `limit` are the dashboard as last drawn.
   const moveBy = (by: 1 | -1) => dispatch(focus === "list" ? { type: "move", by } : { type: "scroll", by, limit });
   useInput((input, key) => {
+    const report = MOUSE_REPORT.exec(input);
+    if (report !== null) {
+      // With a panel shown the frame fills the terminal from its top row, so the pointer's place is the frame's.
+      const [, code, column, row, final] = report;
+      const button = Number(code) & ~MODIFIER_BITS;
+      if (final === "m") {
+        if (button === LEFT_PRESS) dispatch({ type: "disarmDivider" });
+      } else if (button === LEFT_PRESS || button === LEFT_DRAG) {
+        dispatch(
+          beside
+            ? { type: "moveDivider", side: "beside", at: clamp(Number(column) - 1, ...widthBounds) }
+            : { type: "moveDivider", side: "below", at: clamp(Number(row) - 1, ...heightBounds) },
+        );
+      }
+      return;
+    }
     if (input === "q") exit();
     if (input === "j" || key.downArrow) moveBy(1);
     if (input === "k" || key.upArrow) moveBy(-1);
@@ -168,19 +223,27 @@ export function App({ projects }: { projects: readonly ProjectInput[] }) {
     if (key.tab) dispatch({ type: "toggleFocus" });
     if (input === "a") dispatch({ type: "toggleArchived" });
     if (input === "v") dispatch({ type: "cyclePlacement" });
+    if (input === "m") dispatch({ type: "toggleDivider" });
+    if (key.escape) dispatch({ type: "disarmDivider" });
     if (input === "r") refresh();
   });
 
   return (
     <Box width={terminalColumns} flexDirection={beside ? "row" : "column"}>
-      <Box flexDirection="column" flexShrink={0} width={listWidth}>
+      <Box flexDirection="column" flexShrink={0} width={listWidth} height={dividedHeight}>
         {shown.map((row, i) => (
           <RowLine key={top + i} row={row} label={projects[row.project]!.label} widths={widths} selected={top + i === selected} listFocused={focus === "list"} />
         ))}
       </Box>
-      {subject !== undefined && <Panel subject={subject} beside={beside} height={panelHeight} scroll={Math.min(scroll, limit)} focused={focus === "panel"} />}
+      {subject !== undefined && (
+        <Panel subject={subject} beside={beside} height={panelHeight} scroll={Math.min(scroll, limit)} focused={focus === "panel"} armed={dividerArmed} />
+      )}
     </Box>
   );
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), max);
 }
 
 /**
@@ -268,14 +331,15 @@ function RowContents({ row, widths }: { row: Exclude<Row, { kind: "header" }>; w
 /**
  * Applies `action` and picks the selected row in the same step, by the selected row's key, so the
  * rows and the selection they imply never render separately. Whenever another row ends up selected,
- * the panel returns to its top; when none is, Focus returns to the list.
+ * the panel returns to its top; when none is, Focus returns to the list and the Divider is disarmed.
  */
 function reduce(state: State, action: Action): State {
   const next = apply(state, action);
   if (next === state) return state;
   const before = keyAt(rowsOf(state), state.selected);
   const sameRow = before !== undefined && sameKey(before, keyAt(rowsOf(next), next.selected));
-  return { ...next, scroll: sameRow ? next.scroll : 0, focus: next.selected === undefined ? "list" : next.focus };
+  const none = next.selected === undefined;
+  return { ...next, scroll: sameRow ? next.scroll : 0, focus: none ? "list" : next.focus, dividerArmed: !none && next.dividerArmed };
 }
 
 /** The key of row `selected` of `rows`; undefined when nothing is selected. */
@@ -301,6 +365,15 @@ function apply(state: State, action: Action): State {
     case "cyclePlacement":
       if (state.selected === undefined) return state;
       return { ...state, placement: state.placement === "auto" ? "beside" : state.placement === "beside" ? "below" : "auto" };
+    case "toggleDivider":
+      if (state.selected === undefined) return state;
+      return { ...state, dividerArmed: !state.dividerArmed };
+    case "disarmDivider":
+      if (!state.dividerArmed) return state;
+      return { ...state, dividerArmed: false };
+    case "moveDivider":
+      if (!state.dividerArmed || state.divider[action.side] === action.at) return state;
+      return { ...state, divider: { ...state.divider, [action.side]: action.at } };
     case "toggleExpanded": {
       if (row?.kind !== "change") return state;
       const { project, id } = row.key;

@@ -67,3 +67,7 @@ _Avoid_: active pane, mode
 **Placement mode**:
 Where the Detail panel goes: `auto` puts it beside the list when the terminal has 40 columns to spare and below otherwise; `beside` keeps it beside whenever 10 columns are left, squeezing it; `below` always puts it below. `v` cycles `auto` → `beside` → `below`; it starts as `auto` and lasts until the dashboard closes.
 _Avoid_: layout, orientation, split
+
+**Divider**:
+The Detail panel's border between it and the list: a column beside the list, a row below it. `m` arms it: the terminal then reports the mouse and the border is drawn double; pressing and dragging the left button moves the Divider to the pointer, setting the list's width beside the panel or its height below it, and releasing the button (or `m`, `Esc`) disarms it. Disarmed, the mouse is not reported, so click-drag selects text. Each placement keeps its own Divider place until the dashboard closes.
+_Avoid_: splitter, sash, separator
